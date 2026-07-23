@@ -170,3 +170,100 @@ func TestGatewayDuplicateAgentID(t *testing.T) {
 		t.Fatalf("want DUPLICATE_AGENT_ID, got %s", ep.Code)
 	}
 }
+
+// connectAgent dials, sends HELLO, and drains WELCOME. Returns the live WS.
+func connectAgent(t *testing.T, srv *httptest.Server, token, agentID string) (*websocket.Conn, context.Context) {
+	t.Helper()
+	c, ctx := dialWS(t, srv)
+	sendHello(t, ctx, c, token, agentID)
+	env, _ := readFrame(t, ctx, c)
+	if env.Type != protocol.WELCOME {
+		t.Fatalf("connectAgent %s: want WELCOME, got %s", agentID, protocol.TypeName(env.Type))
+	}
+	return c, ctx
+}
+
+func TestGatewaySendRelay(t *testing.T) {
+	// Two agents A and B under the same key/tenant; A SEND → B receives.
+	_, srv := newTestGateway(t, "a:ka:alice:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "ka", "alice-b")
+
+	payload := []byte(`{"hello":"bob"}`)
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.SEND,
+		ID:   "msg-1",
+		Src:  "spoofed-should-be-ignored",
+		Dst:  "alice-b",
+	}, payload)
+
+	env, got := readFrame(t, ctxB, b)
+	if env.Type != protocol.SEND {
+		t.Fatalf("B want SEND, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Src != "alice-a" {
+		t.Fatalf("src not overwritten by Hub: got %q, want alice-a", env.Src)
+	}
+	if env.Tenant != "default" {
+		t.Fatalf("tenant not overwritten: got %q, want default", env.Tenant)
+	}
+	if env.Dst != "alice-b" {
+		t.Fatalf("dst: got %q", env.Dst)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("payload mismatch: got %q want %q", got, payload)
+	}
+}
+
+func TestGatewaySendNoRoute(t *testing.T) {
+	_, srv := newTestGateway(t, "a:ka:alice:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.SEND,
+		ID:   "msg-missing",
+		Dst:  "alice-nobody",
+	}, []byte("x"))
+
+	env, payload := readFrame(t, ctxA, a)
+	if env.Type != protocol.ERROR {
+		t.Fatalf("want ERROR, got %s", protocol.TypeName(env.Type))
+	}
+	ep, err := protocol.UnmarshalError(payload)
+	if err != nil {
+		t.Fatalf("UnmarshalError: %v", err)
+	}
+	if ep.Code != protocol.ErrNoRoute {
+		t.Fatalf("want NO_ROUTE, got %s", ep.Code)
+	}
+}
+
+func TestGatewaySendIdentitySpoofBlocked(t *testing.T) {
+	// Alice tries to forge src=bob and tenant=other; B must see real identity.
+	// Two principals share tenant default for routing, but keys map to different
+	// namespaces so each can only register its own agentId.
+	_, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-sender")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-receiver")
+
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:      protocol.ProtocolVersion,
+		Type:   protocol.SEND,
+		Src:    "bob-receiver", // spoof
+		Tenant: "evil-tenant",  // spoof
+		Dst:    "bob-receiver",
+	}, []byte("pwn"))
+
+	env, _ := readFrame(t, ctxB, b)
+	if env.Type != protocol.SEND {
+		t.Fatalf("want SEND, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Src != "alice-sender" {
+		t.Fatalf("spoofed src leaked: got %q", env.Src)
+	}
+	if env.Tenant != "default" {
+		t.Fatalf("spoofed tenant leaked: got %q", env.Tenant)
+	}
+}

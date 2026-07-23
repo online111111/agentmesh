@@ -177,15 +177,73 @@ func applyIdentity(env protocol.Envelope, agentID, tenant string) protocol.Envel
 	return env
 }
 
-// route dispatches a decoded frame. Task 1.7 extends this with SEND relay. Every
-// inbound frame first has its identity overwritten from the connection (§6).
-func (g *Gateway) route(_ context.Context, conn *Conn, data []byte) {
-	env, _, err := protocol.DecodeFrame(data)
+// route dispatches a decoded frame. Every inbound frame first has its identity
+// overwritten from the connection (§6), then is relayed by type. SEND is
+// at-most-once point-to-point: lookup dst in the same tenant, re-encode the
+// envelope with trusted identity, and Enqueue the original payload tail
+// without re-encoding it (zero-copy payload). Offline targets get ERROR{NO_ROUTE}.
+func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
+	env, payload, err := protocol.DecodeFrame(data)
 	if err != nil {
 		return
 	}
 	env = applyIdentity(env, conn.AgentID(), conn.Tenant())
-	_ = env // relay wiring added in Task 1.7
+
+	switch env.Type {
+	case protocol.SEND:
+		g.relaySend(ctx, conn, env, payload)
+	default:
+		// Unknown / not-yet-implemented types are ignored so the connection stays alive.
+	}
+}
+
+// relaySend implements SEND at-most-once (DESIGN §4.6): lookup the destination
+// within the sender's tenant; if offline, ERROR{NO_ROUTE} back to the source.
+// The payload tail is never re-encoded — only the small envelope is rewritten
+// with the trusted identity, then EncodeFrame reattaches the original payload
+// bytes (zero-copy of the application body).
+func (g *Gateway) relaySend(ctx context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
+	if env.Dst == "" {
+		g.replyError(conn, protocol.ErrNoRoute, "empty destination")
+		return
+	}
+	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
+	if !ok {
+		g.replyError(conn, protocol.ErrNoRoute, "target offline or absent")
+		return
+	}
+	frame, err := protocol.EncodeFrame(env, payload)
+	if err != nil {
+		return
+	}
+	if err := dst.Enqueue(frame); err != nil {
+		// Queue full or closed: surface as QUEUE_FULL / NO_ROUTE to the source.
+		code := protocol.ErrQueueFull
+		if !errors.Is(err, ErrQueueFull) {
+			code = protocol.ErrNoRoute
+		}
+		g.replyError(conn, code, err.Error())
+		return
+	}
+	_ = ctx
+}
+
+// replyError enqueues an ERROR frame on the source connection's send queue.
+func (g *Gateway) replyError(conn *Conn, code, msg string) {
+	ep, err := protocol.MarshalError(protocol.ErrorPayload{Code: code, Message: msg})
+	if err != nil {
+		return
+	}
+	frame, err := protocol.EncodeFrame(protocol.Envelope{
+		V:      protocol.ProtocolVersion,
+		Type:   protocol.ERROR,
+		Dst:    conn.AgentID(),
+		Tenant: conn.Tenant(),
+	}, ep)
+	if err != nil {
+		return
+	}
+	_ = conn.Enqueue(frame)
 }
 
 // writeWelcome enqueues a WELCOME frame on the connection's send queue.
