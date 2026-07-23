@@ -251,6 +251,26 @@ func TestDecodeFrameMalformed(t *testing.T) {
 	badArity = append(badArity, lb[:n3]...)
 	badArity = append(badArity, wrongArity.Bytes()...)
 
+	// Envelope that is a valid 11-slot array but whose hdr declares a huge
+	// Map32 length in a few bytes (memory-amplification guard): 10 minimal
+	// slots then 0xdf ff ff ff ff (Map32 len ~4.29e9). Must error, not OOM.
+	var hugeHdr bytes.Buffer
+	ehe := msgpack.NewEncoder(&hugeHdr)
+	_ = ehe.EncodeArrayLen(11)
+	_ = ehe.EncodeUint(1)            // v
+	_ = ehe.EncodeUint(uint64(SEND)) // type
+	for i := 0; i < 6; i++ {         // id,corr,stream,src,dst,tenant
+		_ = ehe.EncodeString("")
+	}
+	_ = ehe.EncodeInt(0)  // ttl
+	_ = ehe.EncodeUint(0) // hops
+	hugeHdr.Write([]byte{0xdf, 0xff, 0xff, 0xff, 0xff})
+	var hugeHdrFrame []byte
+	hugeHdrFrame = append(hugeHdrFrame, byte(SEND))
+	n4 := binary.PutUvarint(lb[:], uint64(hugeHdr.Len()))
+	hugeHdrFrame = append(hugeHdrFrame, lb[:n4]...)
+	hugeHdrFrame = append(hugeHdrFrame, hugeHdr.Bytes()...)
+
 	cases := []struct {
 		name string
 		buf  []byte
@@ -262,6 +282,7 @@ func TestDecodeFrameMalformed(t *testing.T) {
 		{"corrupt_envelope", corrupt},
 		{"wrong_arity", badArity},
 		{"truncated_env", valid[:len(valid)-3]}, // chop into envelope/payload region
+		{"huge_hdr_maplen", hugeHdrFrame},
 	}
 
 	for _, c := range cases {

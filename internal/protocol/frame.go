@@ -13,10 +13,22 @@ import (
 // (DESIGN §4.2): [v, type, id, corr, stream, src, dst, tenant, ttl, hops, hdr].
 const envelopeSlots = 11
 
-// MaxFrameBytes bounds env_len + payload to prevent memory amplification. It is
-// checked before allocation on decode. Default per config contract; kept as a
-// package-level var so P1 server config can override it.
-var MaxFrameBytes = 16 << 20 // 16 MiB
+// MaxFrameBytes bounds env_len (checked before allocation on decode) to prevent
+// memory amplification. It matches the MESH_MAX_FRAME_BYTES default (DESIGN §9,
+// 1 MiB) and is a package-level var so P1 server config can override it at
+// startup. Note: this bounds the ENVELOPE segment only. The payload tail is a
+// zero-copy slice of the caller-provided buffer and is never allocated by the
+// decoder; enforcing the total env_len + payload cap is the transport read
+// layer's responsibility before the full frame is buffered.
+var MaxFrameBytes = 1 << 20 // 1 MiB (MESH_MAX_FRAME_BYTES default, §9)
+
+// maxHdrPrealloc caps the map size hint used when decoding the hdr slot. An
+// untrusted frame can declare a huge msgpack Map32 length in very few bytes;
+// trusting it as a make() hint would force a giant preallocation before the
+// per-entry decode loop fails on EOF. The map still grows if a legitimately
+// large (but env_len-bounded) header arrives, so this only defeats the
+// amplification attack, never a valid frame.
+const maxHdrPrealloc = 256
 
 // ErrFrameTooBigErr is returned by DecodeFrame when a declared length exceeds
 // MaxFrameBytes. Its Error() is the stable ErrFrameTooBig code string.
@@ -242,7 +254,7 @@ func decodeHdr(dec *msgpack.Decoder) (map[string]string, error) {
 	if mapLen <= 0 {
 		return nil, nil
 	}
-	hdr := make(map[string]string, mapLen)
+	hdr := make(map[string]string, min(mapLen, maxHdrPrealloc))
 	for i := 0; i < mapLen; i++ {
 		k, err := dec.DecodeString()
 		if err != nil {
