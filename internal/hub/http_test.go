@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/coder/websocket"
 	"github.com/online111111/agentmesh/internal/auth"
 	"github.com/online111111/agentmesh/internal/protocol"
 )
@@ -145,6 +146,128 @@ func TestHTTPAgentsBadToken(t *testing.T) {
 	_, srv := newTestHTTP(t, "a:ka:alice:default")
 	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/agents", nil)
 	req.Header.Set("Authorization", "Bearer wrong")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", res.StatusCode)
+	}
+}
+
+func TestHTTPRPCEcho(t *testing.T) {
+	// A WS agent that echoes REQUEST → RESPONSE; HTTP /v1/rpc must get the echo.
+	_, srv := newTestHTTP(t, "a:ka:alice:default")
+
+	agent, ctx := connectAgent(t, srv, "ka", "alice-echo")
+	// Background: read REQUEST, reply RESPONSE with same corr + payload.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			typ, data, err := agent.Read(ctx)
+			if err != nil {
+				return
+			}
+			if typ != websocket.MessageBinary {
+				continue
+			}
+			env, payload, err := protocol.DecodeFrame(data)
+			if err != nil {
+				continue
+			}
+			if env.Type != protocol.REQUEST {
+				continue
+			}
+			// Echo RESPONSE with same corr.
+			frame, err := protocol.EncodeFrame(protocol.Envelope{
+				V:      protocol.ProtocolVersion,
+				Type:   protocol.RESPONSE,
+				ID:     "resp-1",
+				Corr:   env.Corr,
+				Src:    "alice-echo",
+				Dst:    env.Src,
+				Tenant: env.Tenant,
+			}, payload)
+			if err != nil {
+				return
+			}
+			_ = agent.Write(ctx, websocket.MessageBinary, frame)
+			return
+		}
+	}()
+
+	body := `{"to":"alice-echo","payload":"aGVsbG8=","ttlMs":3000}`
+	// payload is base64 of "hello"
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/rpc", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer ka")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/rpc: %v", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d body %s", res.StatusCode, raw)
+	}
+	var out struct {
+		Payload string `json:"payload"`
+		From    string `json:"from"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode: %v body=%s", err, raw)
+	}
+	if out.Payload != "aGVsbG8=" {
+		t.Fatalf("payload: got %q want aGVsbG8=", out.Payload)
+	}
+	if out.From != "alice-echo" {
+		t.Fatalf("from: got %q", out.From)
+	}
+	<-done
+}
+
+func TestHTTPRPCNoRoute(t *testing.T) {
+	_, srv := newTestHTTP(t, "a:ka:alice:default")
+	body := `{"to":"alice-missing","payload":"eA==","ttlMs":1000}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/rpc", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer ka")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(raw), protocol.ErrNoRoute) {
+		t.Fatalf("want NO_ROUTE in body, got %s (status %d)", raw, res.StatusCode)
+	}
+}
+
+func TestHTTPRPCTimeout(t *testing.T) {
+	// Agent registers but never answers → TIMEOUT.
+	_, srv := newTestHTTP(t, "a:ka:alice:default")
+	_, _ = connectAgent(t, srv, "ka", "alice-silent")
+
+	body := `{"to":"alice-silent","payload":"eA==","ttlMs":100}`
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/rpc", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer ka")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer res.Body.Close()
+	raw, _ := io.ReadAll(res.Body)
+	if !strings.Contains(string(raw), protocol.ErrTimeout) {
+		t.Fatalf("want TIMEOUT in body, got %s (status %d)", raw, res.StatusCode)
+	}
+}
+
+func TestHTTPRPCUnauthorized(t *testing.T) {
+	_, srv := newTestHTTP(t, "a:ka:alice:default")
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/rpc", strings.NewReader(`{"to":"x"}`))
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("do: %v", err)

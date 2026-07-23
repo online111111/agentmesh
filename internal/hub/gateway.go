@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -24,6 +25,17 @@ func (w *wsWriter) WriteFrame(ctx context.Context, frame []byte) error {
 	return w.ws.Write(ctx, websocket.MessageBinary, frame)
 }
 
+// pendingWaiter is a one-shot waiter for a RESPONSE correlated by corr id.
+// Used by the HTTP /v1/rpc control-plane path and (later) multi-hop REQUEST.
+type pendingWaiter struct {
+	ch chan pendingResult
+}
+
+type pendingResult struct {
+	env     protocol.Envelope
+	payload []byte
+}
+
 // Gateway upgrades HTTP requests to WebSocket, performs the HELLO/WELCOME
 // authentication handshake (DESIGN §4.3/§6), and registers authenticated
 // connections. Identity (src/tenant) is derived from the authenticated key and
@@ -33,12 +45,62 @@ type Gateway struct {
 	registry      *Registry
 	maxFrameBytes int
 	queueBytes    int
+
+	pendingMu sync.Mutex
+	pending   map[string]*pendingWaiter // corr → waiter
 }
 
 // NewGateway constructs a Gateway. maxFrameBytes bounds the read message size;
 // queueBytes is the per-connection send-queue byte budget.
 func NewGateway(a *auth.Authenticator, r *Registry, maxFrameBytes, queueBytes int) *Gateway {
-	return &Gateway{auth: a, registry: r, maxFrameBytes: maxFrameBytes, queueBytes: queueBytes}
+	return &Gateway{
+		auth:          a,
+		registry:      r,
+		maxFrameBytes: maxFrameBytes,
+		queueBytes:    queueBytes,
+		pending:       make(map[string]*pendingWaiter),
+	}
+}
+
+// registerPending installs a waiter for corr. The caller must later either
+// receive on the channel or call cancelPending to avoid leaks.
+func (g *Gateway) registerPending(corr string) *pendingWaiter {
+	w := &pendingWaiter{ch: make(chan pendingResult, 1)}
+	g.pendingMu.Lock()
+	g.pending[corr] = w
+	g.pendingMu.Unlock()
+	return w
+}
+
+// cancelPending removes a waiter without delivering. Safe if already delivered.
+func (g *Gateway) cancelPending(corr string) {
+	g.pendingMu.Lock()
+	delete(g.pending, corr)
+	g.pendingMu.Unlock()
+}
+
+// deliverPending delivers a RESPONSE to a registered waiter. Returns true if a
+// waiter consumed it (so the frame must not also be relayed to a WS agent).
+func (g *Gateway) deliverPending(env protocol.Envelope, payload []byte) bool {
+	if env.Corr == "" {
+		return false
+	}
+	g.pendingMu.Lock()
+	w, ok := g.pending[env.Corr]
+	if ok {
+		delete(g.pending, env.Corr)
+	}
+	g.pendingMu.Unlock()
+	if !ok {
+		return false
+	}
+	// Copy payload: DecodeFrame may alias into a reused buffer.
+	cp := append([]byte(nil), payload...)
+	select {
+	case w.ch <- pendingResult{env: env, payload: cp}:
+	default:
+	}
+	return true
 }
 
 // Registry exposes the underlying registry (used by the control plane and tests).
@@ -192,9 +254,59 @@ func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
 	switch env.Type {
 	case protocol.SEND:
 		g.relaySend(ctx, conn, env, payload)
+	case protocol.REQUEST:
+		g.relayRequest(ctx, conn, env, payload)
+	case protocol.RESPONSE:
+		g.relayResponse(ctx, conn, env, payload)
 	default:
 		// Unknown / not-yet-implemented types are ignored so the connection stays alive.
 	}
+}
+
+// relayRequest routes a REQUEST to its destination within the sender's tenant.
+// Offline targets get ERROR{NO_ROUTE}. Used both by WS agents and by the HTTP
+// /v1/rpc path (which injects frames via a synthetic Source).
+func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
+	if env.Dst == "" {
+		g.replyError(conn, protocol.ErrNoRoute, "empty destination")
+		return
+	}
+	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
+	if !ok {
+		g.replyError(conn, protocol.ErrNoRoute, "target offline or absent")
+		return
+	}
+	frame, err := protocol.EncodeFrame(env, payload)
+	if err != nil {
+		return
+	}
+	if err := dst.Enqueue(frame); err != nil {
+		code := protocol.ErrQueueFull
+		if !errors.Is(err, ErrQueueFull) {
+			code = protocol.ErrNoRoute
+		}
+		g.replyError(conn, code, err.Error())
+	}
+}
+
+// relayResponse delivers a RESPONSE either to an in-process pending waiter
+// (HTTP /v1/rpc) or to the destination agent connection.
+func (g *Gateway) relayResponse(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
+	if g.deliverPending(env, payload) {
+		return
+	}
+	if env.Dst == "" {
+		return
+	}
+	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
+	if !ok {
+		return // late/unroutable RESPONSE is dropped (Task 3.2 formalizes this)
+	}
+	frame, err := protocol.EncodeFrame(env, payload)
+	if err != nil {
+		return
+	}
+	_ = dst.Enqueue(frame)
 }
 
 // relaySend implements SEND at-most-once (DESIGN §4.6): lookup the destination
