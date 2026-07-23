@@ -97,3 +97,12 @@ func clientIP(r *http.Request) string {
 	}
 	return host
 }
+
+// newLimiterFromEnv returns nil when rate is 0 (disabled).
+func newLimiterFromEnv(rateKey string, rateDef float64, burstKey string, burstDef float64) *RateLimiter {
+	rate := envFloat(rateKey, rateDef)
+	if rate <= 0 {
+		return nil
+	}
+	return NewRateLimiter(rate, envFloat(burstKey, burstDef))
+}

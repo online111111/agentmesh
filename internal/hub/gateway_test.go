@@ -22,6 +22,9 @@ func newTestGateway(t *testing.T, keySpec string) (*Gateway, *httptest.Server) {
 		t.Fatalf("ParseKeys: %v", err)
 	}
 	g := NewGateway(auth.NewAuthenticator(keys), NewRegistry(), 1<<20, 1<<20)
+	// Tests churn connections from one IP; disable anti-flood for unit tests.
+	g.ipLimiter = nil
+	g.msgLimiter = nil
 	srv := httptest.NewServer(http.HandlerFunc(g.ServeWS))
 	t.Cleanup(srv.Close)
 	return g, srv

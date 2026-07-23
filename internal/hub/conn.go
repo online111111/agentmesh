@@ -45,6 +45,10 @@ type Conn struct {
 	curBytes int
 	notify   chan struct{} // buffered(1) wakeup for the write goroutine
 	closed   bool
+
+	// Write coalescing (DESIGN §5): bound batch size to protect p99 latency.
+	coalesceMaxBytes  int
+	coalesceMaxFrames int
 }
 
 // Conn implements the registry's Sender interface.
@@ -55,14 +59,16 @@ var _ Sender = (*Conn)(nil)
 func NewConn(writer frameWriter, agentID, tenant string, maxQueueBytes int) *Conn {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Conn{
-		agentID:    agentID,
-		tenant:     tenant,
-		writer:     writer,
-		maxBytes:   maxQueueBytes,
-		ctx:        ctx,
-		cancel:     cancel,
-		writerDone: make(chan struct{}),
-		notify:     make(chan struct{}, 1),
+		agentID:           agentID,
+		tenant:            tenant,
+		writer:            writer,
+		maxBytes:          maxQueueBytes,
+		ctx:               ctx,
+		cancel:            cancel,
+		writerDone:        make(chan struct{}),
+		notify:            make(chan struct{}, 1),
+		coalesceMaxBytes:  32 << 10, // 32 KiB
+		coalesceMaxFrames: 16,
 	}
 	go c.writeLoop()
 	return c
@@ -111,7 +117,6 @@ func (c *Conn) writeLoop() {
 	for {
 		frame, ok := c.dequeue()
 		if !ok {
-			// Nothing queued: wait for a wakeup or cancellation.
 			select {
 			case <-c.ctx.Done():
 				return
@@ -119,15 +124,26 @@ func (c *Conn) writeLoop() {
 				continue
 			}
 		}
+		// Write this frame, then drain up to coalesceMaxFrames-1 more without
+		// returning to the idle select — reduces scheduling overhead while
+		// preserving one WebSocket binary message per protocol frame (p99 bound).
 		if err := c.writer.WriteFrame(c.ctx, frame); err != nil {
-			// Transport failed or was cancelled: tear down.
 			c.Close()
 			return
+		}
+		for i := 1; i < c.coalesceMaxFrames; i++ {
+			next, ok := c.dequeue()
+			if !ok {
+				break
+			}
+			if err := c.writer.WriteFrame(c.ctx, next); err != nil {
+				c.Close()
+				return
+			}
 		}
 	}
 }
 
-// dequeue pops the oldest frame, freeing its bytes from the budget.
 func (c *Conn) dequeue() ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
