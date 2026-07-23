@@ -1,0 +1,8 @@
+# Example cloudflared config — replace account/tunnel IDs and hostname.
+tunnel: <TUNNEL_ID>
+credentials-file: /etc/cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: mesh.example.com
+    service: http://127.0.0.1:8080
+  - service: http_status:404
