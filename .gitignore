@@ -28,3 +28,4 @@ sdk/typescript/dist/
 scripts/pi-autopilot-chain.sh
 scripts/autopilot-watchdog.sh
 .pi-subagents/
+dist/
