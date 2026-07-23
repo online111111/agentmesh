@@ -87,6 +87,7 @@ func (c *Client) RequestStream(ctx context.Context, dst string, payload []byte, 
 		Src:  c.agentID,
 		Dst:  dst,
 		TTL:  ttlMs,
+		Hops: hubDefaultMaxHops(),
 		Hdr:  map[string]string{"stream": "1"},
 	}
 	if err := c.writeFrame(ctx, env, payload); err != nil {

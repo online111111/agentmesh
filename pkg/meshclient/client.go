@@ -253,6 +253,7 @@ func (c *Client) Request(ctx context.Context, dst string, payload []byte, ttlMs 
 		Src:  c.agentID,
 		Dst:  dst,
 		TTL:  ttlMs,
+		Hops: hubDefaultMaxHops(),
 	}
 	if err := c.writeFrame(ctx, env, payload); err != nil {
 		return nil, err
@@ -446,3 +447,7 @@ func toWSURL(raw string) string {
 	// httptest.Server URL has no path; Hub accepts WS at "/".
 	return u
 }
+
+// hubDefaultMaxHops mirrors hub.DefaultMaxHops (DESIGN §4.12) without importing
+// the hub package into the public SDK.
+func hubDefaultMaxHops() uint8 { return 8 }

@@ -15,6 +15,10 @@ import (
 // defaultHeartbeatMs is advertised in WELCOME as the suggested client heartbeat.
 const defaultHeartbeatMs = 15000
 
+// DefaultMaxHops is the default remaining hop budget when a client omits hops
+// (DESIGN §4.12, MESH_MAX_HOPS=8).
+const DefaultMaxHops uint8 = 8
+
 // wsWriter adapts a *websocket.Conn to the frameWriter interface Conn expects,
 // writing each frame as a single binary message.
 type wsWriter struct {
@@ -642,14 +646,25 @@ func (g *Gateway) relayStreamEnd(_ context.Context, conn *Conn, env protocol.Env
 
 // relayRequest routes a REQUEST to its destination within the sender's tenant.
 // Offline targets get ERROR{NO_ROUTE} with the request's corr so the initiator's
-// Request waiter can complete. Used both by WS agents and by the HTTP /v1/rpc
-// path (which injects frames via a synthetic source). Successful enqueue tracks
-// the corr for disconnect/ttl auto-CANCEL (DESIGN §4.10).
+// Request waiter can complete. Successful enqueue tracks the corr for
+// disconnect/ttl auto-CANCEL (DESIGN §4.10). Hops are decremented per forward;
+// hops==0 after decrement → HOP_LIMIT (DESIGN §4.12). Zero/omitted client hops
+// are treated as DefaultMaxHops on first hop only when the field is 0 AND this
+// is a fresh client send — callers that re-delegate must pass the remaining
+// budget; a explicit 0 means "no hops left".
 func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
 	if env.Dst == "" {
 		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "empty destination")
 		return
 	}
+	// Hop budget (DESIGN §4.12): 0 means exhausted → HOP_LIMIT. SDK sets
+	// DefaultMaxHops when omitted. Each forward decrements before enqueue.
+	if env.Hops == 0 {
+		g.replyErrorCorr(conn, env.Corr, protocol.ErrHopLimit, "hop limit exceeded")
+		return
+	}
+	env.Hops--
+
 	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
 	if !ok {
 		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "target offline or absent")

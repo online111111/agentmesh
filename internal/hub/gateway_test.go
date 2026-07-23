@@ -387,7 +387,7 @@ func TestStreamOpenDataEndRelay(t *testing.T) {
 	corr := "corr-stream-1"
 	sendFrame(t, ctxA, a, protocol.Envelope{
 		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
-		ID: "req-1", Corr: corr, Dst: "bob-b", TTL: 5000,
+		ID: "req-1", Corr: corr, Dst: "bob-b", TTL: 5000, Hops: DefaultMaxHops,
 	}, []byte("stream-please"))
 
 	env, _ := readFrame(t, ctxB, b)
@@ -630,7 +630,7 @@ func TestCancelRoutesToTarget(t *testing.T) {
 	// A REQUEST to B
 	sendFrame(t, ctxA, a, protocol.Envelope{
 		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
-		ID: "r1", Corr: corr, Dst: "bob-b", TTL: 5000,
+		ID: "r1", Corr: corr, Dst: "bob-b", TTL: 5000, Hops: DefaultMaxHops,
 	}, []byte("work"))
 	env, _ := readFrame(t, ctxB, b)
 	if env.Type != protocol.REQUEST {
@@ -663,7 +663,7 @@ func TestCancelOnInitiatorDisconnect(t *testing.T) {
 	corr := "corr-disc-1"
 	sendFrame(t, ctxA, a, protocol.Envelope{
 		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
-		ID: "r1", Corr: corr, Dst: "bob-b", TTL: 30000,
+		ID: "r1", Corr: corr, Dst: "bob-b", TTL: 30000, Hops: DefaultMaxHops,
 	}, []byte("long-job"))
 	env, _ := readFrame(t, ctxB, b)
 	if env.Type != protocol.REQUEST {
@@ -678,5 +678,83 @@ func TestCancelOnInitiatorDisconnect(t *testing.T) {
 	}
 	if env.Corr != corr {
 		t.Fatalf("corr: %q", env.Corr)
+	}
+}
+
+func TestHopLimit(t *testing.T) {
+	// REQUEST with hops=1 is delivered; the target re-delegates with hops already
+	// decremented to 0 → Hub returns HOP_LIMIT to the re-delegator.
+	_, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default\nc:kc:carol:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-b")
+	c, ctxC := connectAgent(t, srv, "kc", "carol-c")
+	_ = ctxC
+	_ = c
+
+	// A → B with hops=1 (one hop remaining after default handling: we send hops=1)
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
+		ID: "r1", Corr: "corr-hop-1", Dst: "bob-b", TTL: 5000, Hops: 1,
+	}, []byte("delegate"))
+	env, _ := readFrame(t, ctxB, b)
+	if env.Type != protocol.REQUEST {
+		t.Fatalf("B want REQUEST, got %s", protocol.TypeName(env.Type))
+	}
+	// After one forward, hops should be 0 on the delivered frame.
+	if env.Hops != 0 {
+		t.Fatalf("delivered hops: want 0, got %d", env.Hops)
+	}
+
+	// B tries to re-delegate to C with hops=0 → HOP_LIMIT back to B
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
+		ID: "r2", Corr: "corr-hop-2", Dst: "carol-c", TTL: 5000, Hops: 0,
+	}, []byte("too-far"))
+	env, payload := readFrame(t, ctxB, b)
+	if env.Type != protocol.ERROR {
+		t.Fatalf("want HOP_LIMIT ERROR, got %s", protocol.TypeName(env.Type))
+	}
+	ep, err := protocol.UnmarshalError(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ep.Code != protocol.ErrHopLimit {
+		t.Fatalf("code: %s", ep.Code)
+	}
+}
+
+func TestMultiHopRequest(t *testing.T) {
+	// A → B → C with enough hops; C sees the REQUEST.
+	_, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default\nc:kc:carol:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-b")
+	c, ctxC := connectAgent(t, srv, "kc", "carol-c")
+
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
+		ID: "r1", Corr: "corr-mh-1", Dst: "bob-b", TTL: 5000, Hops: 3,
+	}, []byte("step1"))
+	env, _ := readFrame(t, ctxB, b)
+	if env.Type != protocol.REQUEST || env.Hops != 2 {
+		t.Fatalf("B: type=%s hops=%d", protocol.TypeName(env.Type), env.Hops)
+	}
+
+	// B re-delegates to C with remaining hops
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
+		ID: "r2", Corr: "corr-mh-2", Dst: "carol-c", TTL: 5000, Hops: env.Hops,
+	}, []byte("step2"))
+	env, payload := readFrame(t, ctxC, c)
+	if env.Type != protocol.REQUEST {
+		t.Fatalf("C want REQUEST, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Hops != 1 {
+		t.Fatalf("C hops: %d", env.Hops)
+	}
+	if string(payload) != "step2" {
+		t.Fatalf("payload: %q", payload)
+	}
+	if env.Src != "bob-b" {
+		t.Fatalf("src: %q", env.Src)
 	}
 }

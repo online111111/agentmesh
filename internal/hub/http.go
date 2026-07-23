@@ -220,6 +220,7 @@ func (h *HTTP) handleRPC(w http.ResponseWriter, r *http.Request) {
 		Dst:    req.To,
 		Tenant: identity.Tenant,
 		TTL:    ttl,
+		Hops:   DefaultMaxHops,
 	}
 	// Inject REQUEST directly into the target's send queue (Hub-originated).
 	frame, err := protocol.EncodeFrame(env, payload)
