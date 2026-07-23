@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -163,4 +164,37 @@ func TestConnIdentity(t *testing.T) {
 	if c.AgentID() != "alice-laptop" || c.Tenant() != "t1" {
 		t.Fatalf("identity mismatch: %s / %s", c.AgentID(), c.Tenant())
 	}
+}
+
+func TestConnChurnNoGoroutineLeak(t *testing.T) {
+	// Create and close many Conns; goroutine count should return near baseline.
+	runtime.GC()
+	time.Sleep(20 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	const N = 50
+	for i := 0; i < N; i++ {
+		w := &passWriter{}
+		c := NewConn(w, "alice-x", "default", 1<<16)
+		_ = c.Enqueue([]byte("hi"))
+		c.Close()
+		// Wait for writeLoop to exit
+		select {
+		case <-c.Done():
+		case <-time.After(2 * time.Second):
+			t.Fatal("writeLoop did not exit")
+		}
+	}
+	// Allow scheduler to reap
+	deadline := time.Now().Add(3 * time.Second)
+	var after int
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		time.Sleep(20 * time.Millisecond)
+		after = runtime.NumGoroutine()
+		if after <= base+5 {
+			return
+		}
+	}
+	t.Fatalf("goroutine leak: baseline=%d after=%d (delta=%d)", base, after, after-base)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -805,4 +806,47 @@ func TestTakeoverRejectDefault(t *testing.T) {
 	if ep.Code != protocol.ErrDuplicateAgentID {
 		t.Fatalf("code: %s", ep.Code)
 	}
+}
+
+func TestGatewayChurnNoLeak(t *testing.T) {
+	g, srv := newTestGateway(t, "a:ka:alice:default")
+	_ = g
+	runtime.GC()
+	time.Sleep(30 * time.Millisecond)
+	base := runtime.NumGoroutine()
+
+	for i := 0; i < 40; i++ {
+		// Unique agent ids to avoid DUPLICATE under default reject policy.
+		id := "alice-churn-" + itoaLocal(i)
+		c, _ := connectAgent(t, srv, "ka", id)
+		_ = c.Close(websocket.StatusNormalClosure, "bye")
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var after int
+	for time.Now().Before(deadline) {
+		runtime.GC()
+		time.Sleep(30 * time.Millisecond)
+		after = runtime.NumGoroutine()
+		if after <= base+15 {
+			return
+		}
+	}
+	t.Fatalf("goroutine leak under churn: baseline=%d after=%d delta=%d", base, after, after-base)
+}
+
+func itoaLocal(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b [12]byte
+	pos := len(b)
+	n := i
+	for n > 0 {
+		pos--
+		b[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[pos:])
 }
