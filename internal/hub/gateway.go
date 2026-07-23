@@ -193,6 +193,13 @@ func (g *Gateway) DropStats() DropStats {
 // Registry exposes the underlying registry (used by the control plane and tests).
 func (g *Gateway) Registry() *Registry { return g.registry }
 
+// SetLimiters replaces the message and IP rate limiters (nil disables).
+// Intended for benchmarks and tests.
+func (g *Gateway) SetLimiters(msg, ip *RateLimiter) {
+	g.msgLimiter = msg
+	g.ipLimiter = ip
+}
+
 // ServeWS is the http.HandlerFunc that upgrades to WebSocket and runs the
 // connection lifecycle.
 func (g *Gateway) ServeWS(w http.ResponseWriter, r *http.Request) {
