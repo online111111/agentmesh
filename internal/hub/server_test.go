@@ -1,6 +1,8 @@
 package hub
 
 import (
+	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -190,4 +192,62 @@ func TestServerAllowInsecureEnv(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	_ = s.Close()
+}
+
+func TestServerTLSListen(t *testing.T) {
+	dir := t.TempDir()
+	cert := dir + "/cert.pem"
+	key := dir + "/key.pem"
+	if err := GenerateSelfSigned(cert, key, []string{"127.0.0.1", "localhost"}); err != nil {
+		t.Fatalf("GenerateSelfSigned: %v", err)
+	}
+	port := freeLoopbackPort(t)
+	cfg := Config{
+		Host:           "127.0.0.1",
+		Port:           port,
+		APIKeys:        "a:ka:alice:default",
+		MaxFrameBytes:  1 << 20,
+		SendQueueBytes: 1 << 20,
+		TLSCert:        cert,
+		TLSKey:         key,
+	}
+	s, err := NewServer(cfg)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	go func() { _ = s.ListenAndServe() }()
+	t.Cleanup(func() { _ = s.Close() })
+
+	// InsecureSkipVerify for self-signed
+	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec
+	client := &http.Client{Transport: tr, Timeout: 2 * time.Second}
+	url := fmt.Sprintf("https://127.0.0.1:%d/health", port)
+	var res *http.Response
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		res, err = client.Get(url)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("GET https /health: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", res.StatusCode)
+	}
+}
+
+func TestGenerateSelfSignedFiles(t *testing.T) {
+	dir := t.TempDir()
+	cert := dir + "/c.pem"
+	key := dir + "/k.pem"
+	if err := GenerateSelfSigned(cert, key, []string{"127.0.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadTLSConfig(cert, key); err != nil {
+		t.Fatal(err)
+	}
 }
