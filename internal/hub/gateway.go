@@ -138,24 +138,32 @@ func (g *Gateway) handshake(ctx context.Context, ws *websocket.Conn) (*Conn, err
 	return conn, nil
 }
 
-// readLoop reads frames from the client until the connection closes. Frame
-// routing (SEND relay etc.) is added in later tasks; for now unknown frames are
-// ignored so the connection stays alive after WELCOME.
+// readLoop reads frames from the client until the connection closes. It couples
+// its read context to conn.Done() so that if the write goroutine tears the
+// connection down independently (e.g. a transport write error on a half-closed
+// socket), the blocked ws.Read is cancelled promptly and registry cleanup runs
+// without waiting for a TCP timeout. Frame routing (SEND relay etc.) is added in
+// later tasks; for now unknown frames are ignored so the connection stays alive
+// after WELCOME.
 func (g *Gateway) readLoop(ctx context.Context, ws *websocket.Conn, conn *Conn) {
-	for {
+	readCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
 		select {
 		case <-conn.Done():
-			return
-		default:
+			cancel()
+		case <-readCtx.Done():
 		}
-		typ, data, err := ws.Read(ctx)
+	}()
+	for {
+		typ, data, err := ws.Read(readCtx)
 		if err != nil {
 			return
 		}
 		if typ != websocket.MessageBinary {
 			continue
 		}
-		g.route(ctx, conn, data)
+		g.route(readCtx, conn, data)
 	}
 }
 
@@ -170,7 +178,7 @@ func (g *Gateway) route(_ context.Context, _ *Conn, data []byte) {
 // writeWelcome enqueues a WELCOME frame on the connection's send queue.
 func writeWelcome(_ context.Context, conn *Conn, _ *auth.Identity) error {
 	wp, err := protocol.MarshalWelcome(protocol.Welcome{
-		Session:     conn.AgentID(),
+		Session:     protocol.NewID(),
 		HeartbeatMs: defaultHeartbeatMs,
 		Features:    []string{"stream", "pubsub"},
 	})
