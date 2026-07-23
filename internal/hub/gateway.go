@@ -170,13 +170,52 @@ func (g *Gateway) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure registry cleanup and connection teardown on exit.
+	// Ensure registry cleanup, synthesize STREAM_END for producer-owned open
+	// streams (DESIGN §4.10), and tear down the connection on exit.
 	defer func() {
+		g.abortStreamsOwnedBy(conn)
 		g.registry.Remove(conn.Tenant(), conn.AgentID(), conn)
 		conn.Close()
 	}()
 
 	g.readLoop(ctx, ws, conn)
+}
+
+// abortStreamsOwnedBy synthesizes STREAM_END{status=aborted} for every stream
+// this connection was producing, and delivers them to the consumer. STREAM_END
+// is the sole terminal state (DESIGN §4.10) — prevents async iterators hanging.
+func (g *Gateway) abortStreamsOwnedBy(conn *Conn) {
+	g.streamsMu.Lock()
+	var doomed []*streamBinding
+	for id, b := range g.streams {
+		if b.src == conn.AgentID() && b.tenant == conn.Tenant() {
+			doomed = append(doomed, b)
+			delete(g.streams, id)
+		}
+	}
+	g.streamsMu.Unlock()
+
+	for _, b := range doomed {
+		dst, ok := g.registry.Lookup(b.tenant, b.dst)
+		if !ok {
+			continue
+		}
+		env := protocol.Envelope{
+			V:      protocol.ProtocolVersion,
+			Type:   protocol.STREAM_END,
+			Stream: b.streamID,
+			Corr:   b.corr,
+			Src:    b.src,
+			Dst:    b.dst,
+			Tenant: b.tenant,
+			Hdr:    map[string]string{"status": "aborted"},
+		}
+		frame, err := protocol.EncodeFrame(env, nil)
+		if err != nil {
+			continue
+		}
+		_ = dst.Enqueue(frame)
+	}
 }
 
 // handshake reads the first frame, requires it to be a valid HELLO, authenticates

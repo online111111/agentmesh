@@ -469,3 +469,56 @@ func TestStreamDataUnknownDropped(t *testing.T) {
 	// nothing panics; drop stats optional
 	_ = g
 }
+
+func TestSynthesizeStreamEndOnProducerDisconnect(t *testing.T) {
+	// B opens a stream to A, then B disconnects mid-stream → A gets STREAM_END{aborted}.
+	g, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-b")
+
+	corr := "corr-abort-1"
+	streamID := "stream-abort-1"
+	// Simulate OPEN from B to A
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_OPEN,
+		ID: "so", Corr: corr, Stream: streamID, Dst: "alice-a",
+	}, nil)
+	env, _ := readFrame(t, ctxA, a)
+	if env.Type != protocol.STREAM_OPEN {
+		t.Fatalf("want OPEN, got %s", protocol.TypeName(env.Type))
+	}
+
+	// One DATA
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_DATA,
+		Stream: streamID, Hdr: map[string]string{"seq": "0"},
+	}, []byte("partial"))
+	env, payload := readFrame(t, ctxA, a)
+	if env.Type != protocol.STREAM_DATA || string(payload) != "partial" {
+		t.Fatalf("data: type=%s payload=%q", protocol.TypeName(env.Type), payload)
+	}
+
+	// B disconnects (close WS)
+	_ = b.Close(websocket.StatusNormalClosure, "bye")
+
+	// A should receive synthesized STREAM_END{aborted}
+	env, _ = readFrame(t, ctxA, a)
+	if env.Type != protocol.STREAM_END {
+		t.Fatalf("want synthesized STREAM_END, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Stream != streamID {
+		t.Fatalf("stream: %q", env.Stream)
+	}
+	if env.Hdr["status"] != "aborted" {
+		t.Fatalf("status: %q want aborted", env.Hdr["status"])
+	}
+
+	// Binding removed
+	time.Sleep(20 * time.Millisecond)
+	g.streamsMu.Lock()
+	_, still := g.streams[streamID]
+	g.streamsMu.Unlock()
+	if still {
+		t.Fatal("stream binding should be removed after abort")
+	}
+}
