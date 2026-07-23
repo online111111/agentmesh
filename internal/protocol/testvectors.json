@@ -1,0 +1,1023 @@
+{
+  "version": 1,
+  "slots": 11,
+  "vectors": [
+    {
+      "name": "hello",
+      "type": 1,
+      "typeName": "HELLO",
+      "env": {
+        "v": 1,
+        "type": 1,
+        "id": "01HELLO",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "caps": "echo,code",
+          "proto": "1"
+        }
+      },
+      "payloadHex": "7b22746f6b656e223a226b61222c226167656e744964223a22616c6963652d6c6170746f70227d",
+      "frameHex": "013a9b0101a7303148454c4c4fa0a0ac616c6963652d6c6170746f70a0a461636d65000082a463617073a96563686f2c636f6465a570726f746fa1317b22746f6b656e223a226b61222c226167656e744964223a22616c6963652d6c6170746f70227d",
+      "envHex": "9b0101a7303148454c4c4fa0a0ac616c6963652d6c6170746f70a0a461636d65000082a463617073a96563686f2c636f6465a570726f746fa131",
+      "jsonFrame": {
+        "v": 1,
+        "type": 1,
+        "id": "01HELLO",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "caps": "echo,code",
+          "proto": "1"
+        },
+        "payload": "eyJ0b2tlbiI6ImthIiwiYWdlbnRJZCI6ImFsaWNlLWxhcHRvcCJ9"
+      }
+    },
+    {
+      "name": "welcome",
+      "type": 2,
+      "typeName": "WELCOME",
+      "env": {
+        "v": 1,
+        "type": 2,
+        "id": "01WELCOME",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "heartbeat": "15000",
+          "session": "S1"
+        }
+      },
+      "payloadHex": "7b2273657373696f6e223a225331222c226665617475726573223a5b2273747265616d225d7d",
+      "frameHex": "02409b0102a9303157454c434f4d45a0a0a0ac616c6963652d6c6170746f70a461636d65000082a9686561727462656174a53135303030a773657373696f6ea253317b2273657373696f6e223a225331222c226665617475726573223a5b2273747265616d225d7d",
+      "envHex": "9b0102a9303157454c434f4d45a0a0a0ac616c6963652d6c6170746f70a461636d65000082a9686561727462656174a53135303030a773657373696f6ea25331",
+      "jsonFrame": {
+        "v": 1,
+        "type": 2,
+        "id": "01WELCOME",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "heartbeat": "15000",
+          "session": "S1"
+        },
+        "payload": "eyJzZXNzaW9uIjoiUzEiLCJmZWF0dXJlcyI6WyJzdHJlYW0iXX0="
+      }
+    },
+    {
+      "name": "ping",
+      "type": 3,
+      "typeName": "PING",
+      "env": {
+        "v": 1,
+        "type": 3,
+        "id": "01PING",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "03129b0103a6303150494e47a0a0a0a0a0000080",
+      "envHex": "9b0103a6303150494e47a0a0a0a0a0000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 3,
+        "id": "01PING",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "pong",
+      "type": 4,
+      "typeName": "PONG",
+      "env": {
+        "v": 1,
+        "type": 4,
+        "id": "01PONG",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "rtt": "3"
+        }
+      },
+      "payloadHex": "",
+      "frameHex": "04189b0104a63031504f4e47a0a0a0a0a0000081a3727474a133",
+      "envHex": "9b0104a63031504f4e47a0a0a0a0a0000081a3727474a133",
+      "jsonFrame": {
+        "v": 1,
+        "type": 4,
+        "id": "01PONG",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "rtt": "3"
+        },
+        "payload": ""
+      }
+    },
+    {
+      "name": "send",
+      "type": 16,
+      "typeName": "SEND",
+      "env": {
+        "v": 1,
+        "type": 16,
+        "id": "01SEND",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 8,
+        "hdr": null
+      },
+      "payloadHex": "7b2268656c6c6f223a2266726f6d2d62227d",
+      "frameHex": "102c9b0110a6303153454e44a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d650008807b2268656c6c6f223a2266726f6d2d62227d",
+      "envHex": "9b0110a6303153454e44a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65000880",
+      "jsonFrame": {
+        "v": 1,
+        "type": 16,
+        "id": "01SEND",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 8,
+        "hdr": null,
+        "payload": "eyJoZWxsbyI6ImZyb20tYiJ9"
+      }
+    },
+    {
+      "name": "request",
+      "type": 17,
+      "typeName": "REQUEST",
+      "env": {
+        "v": 1,
+        "type": 17,
+        "id": "01REQ",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 30000,
+        "hops": 8,
+        "hdr": {
+          "ct": "application/x-mesh-task"
+        }
+      },
+      "payloadHex": "7b227461736b223a2273756d6d6172697a65222c2273747265616d223a747275657d",
+      "frameHex": "114e9b0111a53031524551a63031434f5252a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65cd75300881a26374b76170706c69636174696f6e2f782d6d6573682d7461736b7b227461736b223a2273756d6d6172697a65222c2273747265616d223a747275657d",
+      "envHex": "9b0111a53031524551a63031434f5252a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65cd75300881a26374b76170706c69636174696f6e2f782d6d6573682d7461736b",
+      "jsonFrame": {
+        "v": 1,
+        "type": 17,
+        "id": "01REQ",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 30000,
+        "hops": 8,
+        "hdr": {
+          "ct": "application/x-mesh-task"
+        },
+        "payload": "eyJ0YXNrIjoic3VtbWFyaXplIiwic3RyZWFtIjp0cnVlfQ=="
+      }
+    },
+    {
+      "name": "response",
+      "type": 18,
+      "typeName": "RESPONSE",
+      "env": {
+        "v": 1,
+        "type": 18,
+        "id": "01RESP",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "7b226f6b223a747275657d",
+      "frameHex": "12329b0112a6303152455350a63031434f5252a0aa626f622d736572766572ac616c6963652d6c6170746f70a461636d650000807b226f6b223a747275657d",
+      "envHex": "9b0112a6303152455350a63031434f5252a0aa626f622d736572766572ac616c6963652d6c6170746f70a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 18,
+        "id": "01RESP",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": "eyJvayI6dHJ1ZX0="
+      }
+    },
+    {
+      "name": "cancel",
+      "type": 19,
+      "typeName": "CANCEL",
+      "env": {
+        "v": 1,
+        "type": 19,
+        "id": "01CANCEL",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "13349b0113a8303143414e43454ca63031434f5252a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65000080",
+      "envHex": "9b0113a8303143414e43454ca63031434f5252a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 19,
+        "id": "01CANCEL",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "ack",
+      "type": 30,
+      "typeName": "ACK",
+      "env": {
+        "v": 1,
+        "type": 30,
+        "id": "01SEND",
+        "corr": "",
+        "stream": "",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "1e2c9b011ea6303153454e44a0a0aa626f622d736572766572ac616c6963652d6c6170746f70a461636d65000080",
+      "envHex": "9b011ea6303153454e44a0a0aa626f622d736572766572ac616c6963652d6c6170746f70a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 30,
+        "id": "01SEND",
+        "corr": "",
+        "stream": "",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "nack",
+      "type": 31,
+      "typeName": "NACK",
+      "env": {
+        "v": 1,
+        "type": 31,
+        "id": "01SEND",
+        "corr": "",
+        "stream": "",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "code": "QUEUE_FULL"
+        }
+      },
+      "payloadHex": "",
+      "frameHex": "1f3c9b011fa6303153454e44a0a0aa626f622d736572766572ac616c6963652d6c6170746f70a461636d65000081a4636f6465aa51554555455f46554c4c",
+      "envHex": "9b011fa6303153454e44a0a0aa626f622d736572766572ac616c6963652d6c6170746f70a461636d65000081a4636f6465aa51554555455f46554c4c",
+      "jsonFrame": {
+        "v": 1,
+        "type": 31,
+        "id": "01SEND",
+        "corr": "",
+        "stream": "",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "code": "QUEUE_FULL"
+        },
+        "payload": ""
+      }
+    },
+    {
+      "name": "stream_open",
+      "type": 32,
+      "typeName": "STREAM_OPEN",
+      "env": {
+        "v": 1,
+        "type": 32,
+        "id": "01SO",
+        "corr": "01CORR",
+        "stream": "01STREAM",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "20389b0120a43031534fa63031434f5252a8303153545245414daa626f622d736572766572ac616c6963652d6c6170746f70a461636d65000080",
+      "envHex": "9b0120a43031534fa63031434f5252a8303153545245414daa626f622d736572766572ac616c6963652d6c6170746f70a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 32,
+        "id": "01SO",
+        "corr": "01CORR",
+        "stream": "01STREAM",
+        "src": "bob-server",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "stream_data",
+      "type": 33,
+      "typeName": "STREAM_DATA",
+      "env": {
+        "v": 1,
+        "type": 33,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "seq": "0"
+        }
+      },
+      "payloadHex": "746f6b656e2d30",
+      "frameHex": "211a9b0121a0a0a8303153545245414da0a0a0000081a3736571a130746f6b656e2d30",
+      "envHex": "9b0121a0a0a8303153545245414da0a0a0000081a3736571a130",
+      "jsonFrame": {
+        "v": 1,
+        "type": 33,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "seq": "0"
+        },
+        "payload": "dG9rZW4tMA=="
+      }
+    },
+    {
+      "name": "stream_end_ok",
+      "type": 34,
+      "typeName": "STREAM_END",
+      "env": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "ok"
+        }
+      },
+      "payloadHex": "",
+      "frameHex": "221e9b0122a0a0a8303153545245414da0a0a0000081a6737461747573a26f6b",
+      "envHex": "9b0122a0a0a8303153545245414da0a0a0000081a6737461747573a26f6b",
+      "jsonFrame": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "ok"
+        },
+        "payload": ""
+      }
+    },
+    {
+      "name": "stream_end_ok_usage",
+      "type": 34,
+      "typeName": "STREAM_END",
+      "env": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "ok",
+          "usage": "42"
+        }
+      },
+      "payloadHex": "",
+      "frameHex": "22279b0122a0a0a8303153545245414da0a0a0000082a6737461747573a26f6ba57573616765a23432",
+      "envHex": "9b0122a0a0a8303153545245414da0a0a0000082a6737461747573a26f6ba57573616765a23432",
+      "jsonFrame": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "ok",
+          "usage": "42"
+        },
+        "payload": ""
+      }
+    },
+    {
+      "name": "stream_end_error",
+      "type": 34,
+      "typeName": "STREAM_END",
+      "env": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "error"
+        }
+      },
+      "payloadHex": "",
+      "frameHex": "22219b0122a0a0a8303153545245414da0a0a0000081a6737461747573a56572726f72",
+      "envHex": "9b0122a0a0a8303153545245414da0a0a0000081a6737461747573a56572726f72",
+      "jsonFrame": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "error"
+        },
+        "payload": ""
+      }
+    },
+    {
+      "name": "stream_end_aborted",
+      "type": 34,
+      "typeName": "STREAM_END",
+      "env": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "aborted"
+        }
+      },
+      "payloadHex": "",
+      "frameHex": "22239b0122a0a0a8303153545245414da0a0a0000081a6737461747573a761626f72746564",
+      "envHex": "9b0122a0a0a8303153545245414da0a0a0000081a6737461747573a761626f72746564",
+      "jsonFrame": {
+        "v": 1,
+        "type": 34,
+        "id": "",
+        "corr": "",
+        "stream": "01STREAM",
+        "src": "",
+        "dst": "",
+        "tenant": "",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "status": "aborted"
+        },
+        "payload": ""
+      }
+    },
+    {
+      "name": "subscribe",
+      "type": 48,
+      "typeName": "SUBSCRIBE",
+      "env": {
+        "v": 1,
+        "type": 48,
+        "id": "01SUB",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "topic:news",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "302b9b0130a53031535542a0a0ac616c6963652d6c6170746f70aa746f7069633a6e657773a461636d65000080",
+      "envHex": "9b0130a53031535542a0a0ac616c6963652d6c6170746f70aa746f7069633a6e657773a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 48,
+        "id": "01SUB",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "topic:news",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "suback",
+      "type": 49,
+      "typeName": "SUBACK",
+      "env": {
+        "v": 1,
+        "type": 49,
+        "id": "01SUB",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "topic": "topic:news"
+        }
+      },
+      "payloadHex": "",
+      "frameHex": "31329b0131a53031535542a0a0a0ac616c6963652d6c6170746f70a461636d65000081a5746f706963aa746f7069633a6e657773",
+      "envHex": "9b0131a53031535542a0a0a0ac616c6963652d6c6170746f70a461636d65000081a5746f706963aa746f7069633a6e657773",
+      "jsonFrame": {
+        "v": 1,
+        "type": 49,
+        "id": "01SUB",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "topic": "topic:news"
+        },
+        "payload": ""
+      }
+    },
+    {
+      "name": "unsub",
+      "type": 50,
+      "typeName": "UNSUB",
+      "env": {
+        "v": 1,
+        "type": 50,
+        "id": "01UNSUB",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "topic:news",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "322d9b0132a73031554e535542a0a0ac616c6963652d6c6170746f70aa746f7069633a6e657773a461636d65000080",
+      "envHex": "9b0132a73031554e535542a0a0ac616c6963652d6c6170746f70aa746f7069633a6e657773a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 50,
+        "id": "01UNSUB",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "topic:news",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "publish",
+      "type": 51,
+      "typeName": "PUBLISH",
+      "env": {
+        "v": 1,
+        "type": 51,
+        "id": "01PUB",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "topic:news",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "ct": "application/json"
+        }
+      },
+      "payloadHex": "7b22686561646c696e65223a226869227d",
+      "frameHex": "333f9b0133a53031505542a0a0ac616c6963652d6c6170746f70aa746f7069633a6e657773a461636d65000081a26374b06170706c69636174696f6e2f6a736f6e7b22686561646c696e65223a226869227d",
+      "envHex": "9b0133a53031505542a0a0ac616c6963652d6c6170746f70aa746f7069633a6e657773a461636d65000081a26374b06170706c69636174696f6e2f6a736f6e",
+      "jsonFrame": {
+        "v": 1,
+        "type": 51,
+        "id": "01PUB",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "topic:news",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "ct": "application/json"
+        },
+        "payload": "eyJoZWFkbGluZSI6ImhpIn0="
+      }
+    },
+    {
+      "name": "ticket_req",
+      "type": 64,
+      "typeName": "TICKET_REQ",
+      "env": {
+        "v": 1,
+        "type": 64,
+        "id": "01TREQ",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "402c9b0140a6303154524551a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65000080",
+      "envHex": "9b0140a6303154524551a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 64,
+        "id": "01TREQ",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "ticket",
+      "type": 65,
+      "typeName": "TICKET",
+      "env": {
+        "v": 1,
+        "type": 65,
+        "id": "01TICKET",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "nonce": "abc",
+          "ttl": "5000"
+        }
+      },
+      "payloadHex": "7469636b65742d626c6f62",
+      "frameHex": "41379b0141a830315449434b4554a0a0a0ac616c6963652d6c6170746f70a461636d65000082a56e6f6e6365a3616263a374746ca4353030307469636b65742d626c6f62",
+      "envHex": "9b0141a830315449434b4554a0a0a0ac616c6963652d6c6170746f70a461636d65000082a56e6f6e6365a3616263a374746ca435303030",
+      "jsonFrame": {
+        "v": 1,
+        "type": 65,
+        "id": "01TICKET",
+        "corr": "",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "nonce": "abc",
+          "ttl": "5000"
+        },
+        "payload": "dGlja2V0LWJsb2I="
+      }
+    },
+    {
+      "name": "p2p_hello",
+      "type": 66,
+      "typeName": "P2P_HELLO",
+      "env": {
+        "v": 1,
+        "type": 66,
+        "id": "01P2P",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "422b9b0142a53031503250a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65000080",
+      "envHex": "9b0142a53031503250a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65000080",
+      "jsonFrame": {
+        "v": 1,
+        "type": 66,
+        "id": "01P2P",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": null,
+        "payload": ""
+      }
+    },
+    {
+      "name": "error",
+      "type": 255,
+      "typeName": "ERROR",
+      "env": {
+        "v": 1,
+        "type": 255,
+        "id": "01ERR",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "code": "NO_ROUTE"
+        }
+      },
+      "payloadHex": "7b22636f6465223a224e4f5f524f555445227d",
+      "frameHex": "ff369b01ccffa53031455252a63031434f5252a0a0ac616c6963652d6c6170746f70a461636d65000081a4636f6465a84e4f5f524f5554457b22636f6465223a224e4f5f524f555445227d",
+      "envHex": "9b01ccffa53031455252a63031434f5252a0a0ac616c6963652d6c6170746f70a461636d65000081a4636f6465a84e4f5f524f555445",
+      "jsonFrame": {
+        "v": 1,
+        "type": 255,
+        "id": "01ERR",
+        "corr": "01CORR",
+        "stream": "",
+        "src": "",
+        "dst": "alice-laptop",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "code": "NO_ROUTE"
+        },
+        "payload": "eyJjb2RlIjoiTk9fUk9VVEUifQ=="
+      }
+    },
+    {
+      "name": "hdr_multi_unsorted",
+      "type": 16,
+      "typeName": "SEND",
+      "env": {
+        "v": 1,
+        "type": 16,
+        "id": "01HDR",
+        "corr": "",
+        "stream": "",
+        "src": "a",
+        "dst": "b",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "alpha": "2",
+          "mid": "3",
+          "zeta": "1"
+        }
+      },
+      "payloadHex": "78",
+      "frameHex": "102c9b0110a53031484452a0a0a161a162a461636d65000083a5616c706861a132a36d6964a133a47a657461a13178",
+      "envHex": "9b0110a53031484452a0a0a161a162a461636d65000083a5616c706861a132a36d6964a133a47a657461a131",
+      "jsonFrame": {
+        "v": 1,
+        "type": 16,
+        "id": "01HDR",
+        "corr": "",
+        "stream": "",
+        "src": "a",
+        "dst": "b",
+        "tenant": "acme",
+        "ttl": 0,
+        "hops": 0,
+        "hdr": {
+          "alpha": "2",
+          "mid": "3",
+          "zeta": "1"
+        },
+        "payload": "eA=="
+      }
+    },
+    {
+      "name": "utf8_multibyte",
+      "type": 16,
+      "typeName": "SEND",
+      "env": {
+        "v": 1,
+        "type": 16,
+        "id": "01UTF8",
+        "corr": "",
+        "stream": "",
+        "src": "爱丽丝-🚀",
+        "dst": "鲍勃-🛰",
+        "tenant": "租户",
+        "ttl": 1000,
+        "hops": 4,
+        "hdr": null
+      },
+      "payloadHex": "e5a49ae5ad97e88a822df09f9a802d7061796c6f6164",
+      "frameHex": "10339b0110a6303155544638a0a0aee788b1e4b8bde4b89d2df09f9a80abe9b28de58b832df09f9bb0a6e7a79fe688b7cd03e80480e5a49ae5ad97e88a822df09f9a802d7061796c6f6164",
+      "envHex": "9b0110a6303155544638a0a0aee788b1e4b8bde4b89d2df09f9a80abe9b28de58b832df09f9bb0a6e7a79fe688b7cd03e80480",
+      "jsonFrame": {
+        "v": 1,
+        "type": 16,
+        "id": "01UTF8",
+        "corr": "",
+        "stream": "",
+        "src": "爱丽丝-🚀",
+        "dst": "鲍勃-🛰",
+        "tenant": "租户",
+        "ttl": 1000,
+        "hops": 4,
+        "hdr": null,
+        "payload": "5aSa5a2X6IqCLfCfmoAtcGF5bG9hZA=="
+      }
+    },
+    {
+      "name": "empty_payload_full_env",
+      "type": 16,
+      "typeName": "SEND",
+      "env": {
+        "v": 1,
+        "type": 16,
+        "id": "01EMPTY",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 5000,
+        "hops": 8,
+        "hdr": null
+      },
+      "payloadHex": "",
+      "frameHex": "102f9b0110a73031454d505459a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65cd13880880",
+      "envHex": "9b0110a73031454d505459a0a0ac616c6963652d6c6170746f70aa626f622d736572766572a461636d65cd13880880",
+      "jsonFrame": {
+        "v": 1,
+        "type": 16,
+        "id": "01EMPTY",
+        "corr": "",
+        "stream": "",
+        "src": "alice-laptop",
+        "dst": "bob-server",
+        "tenant": "acme",
+        "ttl": 5000,
+        "hops": 8,
+        "hdr": null,
+        "payload": ""
+      }
+    }
+  ]
+}
