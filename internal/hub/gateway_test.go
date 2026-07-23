@@ -620,3 +620,63 @@ func TestStreamAbortOnBackpressure(t *testing.T) {
 		Src: "bob-b", Tenant: "default",
 	}, []byte("orphan"))
 }
+
+func TestCancelRoutesToTarget(t *testing.T) {
+	_, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-b")
+
+	corr := "corr-cancel-1"
+	// A REQUEST to B
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
+		ID: "r1", Corr: corr, Dst: "bob-b", TTL: 5000,
+	}, []byte("work"))
+	env, _ := readFrame(t, ctxB, b)
+	if env.Type != protocol.REQUEST {
+		t.Fatalf("want REQUEST, got %s", protocol.TypeName(env.Type))
+	}
+
+	// A CANCEL
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.CANCEL,
+		ID: "c1", Corr: corr, Dst: "bob-b",
+	}, nil)
+	env, _ = readFrame(t, ctxB, b)
+	if env.Type != protocol.CANCEL {
+		t.Fatalf("want CANCEL, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Corr != corr {
+		t.Fatalf("corr: %q", env.Corr)
+	}
+	if env.Src != "alice-a" {
+		t.Fatalf("src: %q", env.Src)
+	}
+}
+
+func TestCancelOnInitiatorDisconnect(t *testing.T) {
+	// A REQUEST to B, then A disconnects → B receives CANCEL for that corr.
+	_, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-b")
+
+	corr := "corr-disc-1"
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
+		ID: "r1", Corr: corr, Dst: "bob-b", TTL: 30000,
+	}, []byte("long-job"))
+	env, _ := readFrame(t, ctxB, b)
+	if env.Type != protocol.REQUEST {
+		t.Fatalf("want REQUEST, got %s", protocol.TypeName(env.Type))
+	}
+
+	_ = a.Close(websocket.StatusNormalClosure, "bye")
+
+	env, _ = readFrame(t, ctxB, b)
+	if env.Type != protocol.CANCEL {
+		t.Fatalf("want auto CANCEL on disconnect, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Corr != corr {
+		t.Fatalf("corr: %q", env.Corr)
+	}
+}

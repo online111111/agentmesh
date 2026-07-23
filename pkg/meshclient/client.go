@@ -272,8 +272,11 @@ func (c *Client) Request(ctx context.Context, dst string, payload []byte, ttlMs 
 		}
 		return &res, nil
 	case <-timer.C:
+		// Best-effort CANCEL so the target stops work (DESIGN §4.10).
+		_ = c.Cancel(context.Background(), dst, corr)
 		return nil, &RPCError{Code: protocol.ErrTimeout, Message: "request timed out"}
 	case <-ctx.Done():
+		_ = c.Cancel(context.Background(), dst, corr)
 		return nil, ctx.Err()
 	case <-c.closeCh:
 		return nil, errors.New("meshclient: closed")

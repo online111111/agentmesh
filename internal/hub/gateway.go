@@ -59,6 +59,22 @@ type Gateway struct {
 	// STREAM_DATA/END use compact envelopes (no src/dst) and resolve via this table.
 	streamsMu sync.Mutex
 	streams   map[string]*streamBinding
+
+	// In-flight REQUESTs: corr → inflight so CANCEL can be auto-issued on
+	// initiator disconnect / ttl expiry (DESIGN §4.10).
+	inflightMu sync.Mutex
+	inflight   map[string]*inflightReq // corr → req
+}
+
+// inflightReq tracks an open REQUEST from initiator → target until RESPONSE,
+// STREAM_END, explicit CANCEL, or initiator disconnect.
+type inflightReq struct {
+	corr     string
+	from     string // initiator agentId
+	to       string // target agentId
+	tenant   string
+	timer    *time.Timer
+	cancelFn func() // stops timer; set after construction
 }
 
 // streamBinding routes compact STREAM_DATA/END frames to the initiator and
@@ -81,6 +97,7 @@ func NewGateway(a *auth.Authenticator, r *Registry, maxFrameBytes, queueBytes in
 		queueBytes:    queueBytes,
 		pending:       make(map[string]*pendingWaiter),
 		streams:       make(map[string]*streamBinding),
+		inflight:      make(map[string]*inflightReq),
 	}
 }
 
@@ -170,9 +187,11 @@ func (g *Gateway) ServeWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Ensure registry cleanup, synthesize STREAM_END for producer-owned open
-	// streams (DESIGN §4.10), and tear down the connection on exit.
+	// Ensure registry cleanup, CANCEL in-flight requests this agent initiated,
+	// synthesize STREAM_END for producer-owned open streams (DESIGN §4.10),
+	// and tear down the connection on exit.
 	defer func() {
+		g.cancelInflightFrom(conn)
 		g.abortStreamsOwnedBy(conn)
 		g.registry.Remove(conn.Tenant(), conn.AgentID(), conn)
 		conn.Close()
@@ -343,6 +362,8 @@ func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
 		g.relayRequest(ctx, conn, env, payload)
 	case protocol.RESPONSE:
 		g.relayResponse(ctx, conn, env, payload)
+	case protocol.CANCEL:
+		g.relayCancel(ctx, conn, env, payload)
 	case protocol.STREAM_OPEN:
 		g.relayStreamOpen(ctx, conn, env, payload)
 	case protocol.STREAM_DATA:
@@ -352,6 +373,127 @@ func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
 	default:
 		// Unknown / not-yet-implemented types are ignored so the connection stays alive.
 	}
+}
+
+// trackInflight records a REQUEST so disconnect/ttl can auto-CANCEL.
+func (g *Gateway) trackInflight(corr, from, to, tenant string, ttlMs int32) {
+	if corr == "" {
+		return
+	}
+	r := &inflightReq{corr: corr, from: from, to: to, tenant: tenant}
+	if ttlMs > 0 {
+		r.timer = time.AfterFunc(time.Duration(ttlMs)*time.Millisecond, func() {
+			g.expireInflight(corr)
+		})
+	}
+	g.inflightMu.Lock()
+	// Replace any prior entry for the same corr (should not happen under §4.6 uniqueness).
+	if old, ok := g.inflight[corr]; ok && old.timer != nil {
+		old.timer.Stop()
+	}
+	g.inflight[corr] = r
+	g.inflightMu.Unlock()
+}
+
+// clearInflight removes a tracked REQUEST (RESPONSE arrived, CANCEL sent, etc.).
+func (g *Gateway) clearInflight(corr string) {
+	if corr == "" {
+		return
+	}
+	g.inflightMu.Lock()
+	r, ok := g.inflight[corr]
+	if ok {
+		delete(g.inflight, corr)
+	}
+	g.inflightMu.Unlock()
+	if ok && r.timer != nil {
+		r.timer.Stop()
+	}
+}
+
+// expireInflight is the ttl timer callback: CANCEL the target and drop tracking.
+func (g *Gateway) expireInflight(corr string) {
+	g.inflightMu.Lock()
+	r, ok := g.inflight[corr]
+	if ok {
+		delete(g.inflight, corr)
+	}
+	g.inflightMu.Unlock()
+	if !ok {
+		return
+	}
+	g.sendCancelTo(r.tenant, r.to, r.from, corr)
+}
+
+// cancelInflightFrom issues CANCEL for every in-flight REQUEST this agent started.
+func (g *Gateway) cancelInflightFrom(conn *Conn) {
+	g.inflightMu.Lock()
+	var doomed []*inflightReq
+	for corr, r := range g.inflight {
+		if r.from == conn.AgentID() && r.tenant == conn.Tenant() {
+			doomed = append(doomed, r)
+			delete(g.inflight, corr)
+		}
+	}
+	g.inflightMu.Unlock()
+	for _, r := range doomed {
+		if r.timer != nil {
+			r.timer.Stop()
+		}
+		g.sendCancelTo(r.tenant, r.to, r.from, r.corr)
+	}
+}
+
+// sendCancelTo enqueues a CANCEL frame on the target agent (best-effort).
+func (g *Gateway) sendCancelTo(tenant, to, from, corr string) {
+	dst, ok := g.registry.Lookup(tenant, to)
+	if !ok {
+		return
+	}
+	env := protocol.Envelope{
+		V:      protocol.ProtocolVersion,
+		Type:   protocol.CANCEL,
+		ID:     protocol.NewID(),
+		Corr:   corr,
+		Src:    from,
+		Dst:    to,
+		Tenant: tenant,
+	}
+	frame, err := protocol.EncodeFrame(env, nil)
+	if err != nil {
+		return
+	}
+	_ = dst.Enqueue(frame)
+}
+
+// relayCancel forwards CANCEL to the target and clears inflight tracking.
+func (g *Gateway) relayCancel(_ context.Context, conn *Conn, env protocol.Envelope, _ []byte) {
+	if env.Corr == "" {
+		return
+	}
+	// Prefer dst if set; otherwise look up from inflight table.
+	target := env.Dst
+	if target == "" {
+		g.inflightMu.Lock()
+		if r, ok := g.inflight[env.Corr]; ok && r.tenant == conn.Tenant() && r.from == conn.AgentID() {
+			target = r.to
+		}
+		g.inflightMu.Unlock()
+	}
+	g.clearInflight(env.Corr)
+	if target == "" {
+		return
+	}
+	env.Dst = target
+	dst, ok := g.registry.Lookup(conn.Tenant(), target)
+	if !ok {
+		return
+	}
+	frame, err := protocol.EncodeFrame(env, nil)
+	if err != nil {
+		return
+	}
+	_ = dst.Enqueue(frame)
 }
 
 // relayStreamOpen binds stream→(src,dst,tenant,corr) and forwards OPEN to dst.
@@ -478,6 +620,8 @@ func (g *Gateway) relayStreamEnd(_ context.Context, conn *Conn, env protocol.Env
 	if !ok {
 		return
 	}
+	// Stream terminal also completes the originating REQUEST.
+	g.clearInflight(bind.corr)
 	if bind.src != conn.AgentID() || bind.tenant != conn.Tenant() {
 		// Non-owner END: restore binding (we already deleted under the lock).
 		g.streamsMu.Lock()
@@ -499,7 +643,8 @@ func (g *Gateway) relayStreamEnd(_ context.Context, conn *Conn, env protocol.Env
 // relayRequest routes a REQUEST to its destination within the sender's tenant.
 // Offline targets get ERROR{NO_ROUTE} with the request's corr so the initiator's
 // Request waiter can complete. Used both by WS agents and by the HTTP /v1/rpc
-// path (which injects frames via a synthetic source).
+// path (which injects frames via a synthetic source). Successful enqueue tracks
+// the corr for disconnect/ttl auto-CANCEL (DESIGN §4.10).
 func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
 	if env.Dst == "" {
 		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "empty destination")
@@ -520,7 +665,9 @@ func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envel
 			code = protocol.ErrNoRoute
 		}
 		g.replyErrorCorr(conn, env.Corr, code, err.Error())
+		return
 	}
+	g.trackInflight(env.Corr, conn.AgentID(), env.Dst, conn.Tenant(), env.TTL)
 }
 
 // relayResponse delivers a RESPONSE either to an in-process pending waiter
@@ -528,6 +675,7 @@ func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envel
 // empty dst), duplicate, and unroutable RESPONSEs are dropped and counted
 // (DESIGN §4.6) — never forwarded to a random agent.
 func (g *Gateway) relayResponse(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
+	g.clearInflight(env.Corr)
 	if g.deliverPending(env, payload) {
 		return
 	}

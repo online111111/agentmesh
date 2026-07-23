@@ -322,3 +322,43 @@ func itoa(i int) string {
 	}
 	return string(b[pos:])
 }
+
+func TestRequestCancelOnTimeout(t *testing.T) {
+	// When Request times out, target receives CANCEL.
+	base := startTestHub(t, "a:ka:alice:default\nb:kb:bob:default")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	a, err := Dial(ctx, Options{HubURL: base, Token: "ka", AgentID: "alice-a"})
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer a.Close()
+	b, err := Dial(ctx, Options{HubURL: base, Token: "kb", AgentID: "bob-b"})
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer b.Close()
+
+	gotCancel := make(chan string, 1)
+	b.OnMessage(func(env protocol.Envelope, payload []byte) {
+		if env.Type == protocol.CANCEL {
+			gotCancel <- env.Corr
+		}
+		// ignore REQUEST — never respond
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	_, err = a.Request(ctx, "bob-b", []byte("job"), 100)
+	if !IsTimeout(err) {
+		t.Fatalf("want TIMEOUT, got %v", err)
+	}
+	select {
+	case corr := <-gotCancel:
+		if corr == "" {
+			t.Fatal("empty corr on CANCEL")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("target did not receive CANCEL after timeout")
+	}
+}

@@ -111,6 +111,10 @@ func (c *Client) RequestStream(ctx context.Context, dst string, payload []byte, 
 		timer := time.NewTimer(time.Duration(ttlMs) * time.Millisecond)
 		defer timer.Stop()
 
+		sendCancel := func() {
+			_ = c.Cancel(context.Background(), dst, corr)
+		}
+
 		for {
 			select {
 			case chunk, ok := <-w.ch:
@@ -130,9 +134,11 @@ func (c *Client) RequestStream(ctx context.Context, dst string, payload []byte, 
 				stream.Stream = w.streamID
 				out <- chunk
 			case <-timer.C:
+				sendCancel()
 				out <- StreamChunk{IsEnd: true, Status: "aborted", Err: &RPCError{Code: protocol.ErrTimeout, Message: "stream timed out"}}
 				return
 			case <-sctx.Done():
+				sendCancel()
 				out <- StreamChunk{IsEnd: true, Status: "aborted", Err: sctx.Err()}
 				return
 			case <-c.closeCh:
@@ -215,4 +221,21 @@ func (c *Client) deliverStreamFrame(env protocol.Envelope, payload []byte) bool 
 		return true
 	}
 	return false
+}
+
+// Cancel sends a CANCEL frame for the given corr to dst (DESIGN §4.10).
+// The Hub routes it to the target agent so it can stop work.
+func (c *Client) Cancel(ctx context.Context, dst, corr string) error {
+	if corr == "" {
+		return errors.New("meshclient: corr is required")
+	}
+	env := protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.CANCEL,
+		ID:   protocol.NewID(),
+		Corr: corr,
+		Src:  c.agentID,
+		Dst:  dst,
+	}
+	return c.writeFrame(ctx, env, nil)
 }
