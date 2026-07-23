@@ -167,12 +167,25 @@ func (g *Gateway) readLoop(ctx context.Context, ws *websocket.Conn, conn *Conn) 
 	}
 }
 
-// route dispatches a decoded frame. Task 1.6/1.7 extend this with identity
-// overwrite and SEND relay. For now it decodes defensively and drops.
-func (g *Gateway) route(_ context.Context, _ *Conn, data []byte) {
-	if _, _, err := protocol.DecodeFrame(data); err != nil {
+// applyIdentity overwrites the src and tenant fields of an envelope with the
+// connection's authenticated identity (DESIGN §6 trust root). Client-reported
+// src/tenant are always ignored, defeating spoofing: agent A can never send as
+// B, and cannot forge a tenant. All other fields are preserved.
+func applyIdentity(env protocol.Envelope, agentID, tenant string) protocol.Envelope {
+	env.Src = agentID
+	env.Tenant = tenant
+	return env
+}
+
+// route dispatches a decoded frame. Task 1.7 extends this with SEND relay. Every
+// inbound frame first has its identity overwritten from the connection (§6).
+func (g *Gateway) route(_ context.Context, conn *Conn, data []byte) {
+	env, _, err := protocol.DecodeFrame(data)
+	if err != nil {
 		return
 	}
+	env = applyIdentity(env, conn.AgentID(), conn.Tenant())
+	_ = env // relay wiring added in Task 1.7
 }
 
 // writeWelcome enqueues a WELCOME frame on the connection's send queue.
