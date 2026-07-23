@@ -237,3 +237,88 @@ func TestRequestNoRoute(t *testing.T) {
 		t.Fatalf("want NO_ROUTE, got %v", err)
 	}
 }
+
+func TestRequestStream(t *testing.T) {
+	// A RequestStream → B replies OPEN→DATA*→END; A iterates chunks in order.
+	base := startTestHub(t, "a:ka:alice:default\nb:kb:bob:default")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	a, err := Dial(ctx, Options{HubURL: base, Token: "ka", AgentID: "alice-a"})
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer a.Close()
+	b, err := Dial(ctx, Options{HubURL: base, Token: "kb", AgentID: "bob-b"})
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer b.Close()
+
+	b.OnMessage(func(env protocol.Envelope, payload []byte) {
+		if env.Type != protocol.REQUEST {
+			return
+		}
+		streamID := protocol.NewID()
+		open := protocol.Envelope{
+			V: protocol.ProtocolVersion, Type: protocol.STREAM_OPEN,
+			ID: protocol.NewID(), Corr: env.Corr, Stream: streamID, Dst: env.Src,
+		}
+		_ = b.WriteFrame(context.Background(), open, nil)
+		for i, tok := range []string{"hel", "lo", "!"} {
+			data := protocol.Envelope{
+				V: protocol.ProtocolVersion, Type: protocol.STREAM_DATA,
+				Stream: streamID, Hdr: map[string]string{"seq": itoa(i)},
+			}
+			_ = b.WriteFrame(context.Background(), data, []byte(tok))
+		}
+		end := protocol.Envelope{
+			V: protocol.ProtocolVersion, Type: protocol.STREAM_END,
+			Stream: streamID, Hdr: map[string]string{"status": "ok"},
+		}
+		_ = b.WriteFrame(context.Background(), end, nil)
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	stream, err := a.RequestStream(ctx, "bob-b", []byte("stream-please"), 3000)
+	if err != nil {
+		t.Fatalf("RequestStream: %v", err)
+	}
+	var got []string
+	var status string
+	for chunk := range stream.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("chunk err: %v", chunk.Err)
+		}
+		if chunk.IsEnd {
+			status = chunk.Status
+			break
+		}
+		got = append(got, string(chunk.Data))
+	}
+	if status != "ok" {
+		t.Fatalf("status: %q", status)
+	}
+	if len(got) != 3 || got[0] != "hel" || got[1] != "lo" || got[2] != "!" {
+		t.Fatalf("chunks: %v", got)
+	}
+	// seq ordered
+	if stream.LastSeq != 2 {
+		t.Fatalf("LastSeq: %d", stream.LastSeq)
+	}
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b [12]byte
+	pos := len(b)
+	n := i
+	for n > 0 {
+		pos--
+		b[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[pos:])
+}

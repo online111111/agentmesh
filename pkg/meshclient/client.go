@@ -53,8 +53,12 @@ type Client struct {
 	closeCh  chan struct{}
 	readDone chan struct{}
 
-	// pending corr → waiter for Request/RESPONSE (and later streams).
+	// pending corr → waiter for Request/RESPONSE.
 	pending map[string]*corrWaiter
+
+	// stream waiters: by corr (until OPEN) and by stream id (after OPEN).
+	streamWaiters map[string]*streamWaiter
+	streamByID    map[string]*streamWaiter
 }
 
 // corrWaiter is a one-shot RESPONSE waiter keyed by corr.
@@ -181,12 +185,14 @@ func Dial(ctx context.Context, opt Options) (*Client, error) {
 	}
 
 	c := &Client{
-		ws:       ws,
-		agentID:  opt.AgentID,
-		session:  welcome.Session,
-		closeCh:  make(chan struct{}),
-		readDone: make(chan struct{}),
-		pending:  make(map[string]*corrWaiter),
+		ws:            ws,
+		agentID:       opt.AgentID,
+		session:       welcome.Session,
+		closeCh:       make(chan struct{}),
+		readDone:      make(chan struct{}),
+		pending:       make(map[string]*corrWaiter),
+		streamWaiters: make(map[string]*streamWaiter),
+		streamByID:    make(map[string]*streamWaiter),
 	}
 	go c.readLoop()
 	return c, nil
@@ -374,16 +380,38 @@ func (c *Client) readLoop() {
 		if err != nil {
 			continue
 		}
-		// Route RESPONSE (and ERROR with corr) to pending Request waiters first.
+		// Route RESPONSE / STREAM_* / correlated ERROR to waiters first.
 		switch env.Type {
 		case protocol.RESPONSE:
 			if c.deliverPending(env, payload) {
+				continue
+			}
+		case protocol.STREAM_OPEN, protocol.STREAM_DATA, protocol.STREAM_END:
+			if c.deliverStreamFrame(env, payload) {
 				continue
 			}
 		case protocol.ERROR:
 			// Correlated application errors (e.g. NO_ROUTE for a REQUEST) wake the waiter.
 			if env.Corr != "" && c.deliverPending(env, payload) {
 				continue
+			}
+			// Also wake stream waiters on correlated ERROR.
+			if env.Corr != "" {
+				c.mu.Lock()
+				sw := c.streamWaiters[env.Corr]
+				c.mu.Unlock()
+				if sw != nil {
+					ep, _ := protocol.UnmarshalError(payload)
+					code := ep.Code
+					if code == "" {
+						code = "ERROR"
+					}
+					select {
+					case sw.ch <- StreamChunk{IsEnd: true, Status: "aborted", Err: &RPCError{Code: code, Message: ep.Message}}:
+					default:
+					}
+					continue
+				}
 			}
 		}
 		// Copy payload: DecodeFrame aliases the transport buffer.
