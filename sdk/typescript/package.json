@@ -1,0 +1,19 @@
+{
+  "name": "@agentmesh/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/vitest/vitest.mjs run",
+    "test:vectors": "node --experimental-vm-modules node_modules/vitest/vitest.mjs run test/vectors.test.ts"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.1.8",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.2"
+  }
+}
