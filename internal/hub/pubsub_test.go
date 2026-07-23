@@ -83,17 +83,21 @@ func TestPubSubUnsub(t *testing.T) {
 		V: protocol.ProtocolVersion, Type: protocol.UNSUB,
 		ID: "unsub1", Dst: "topic:news",
 	}, nil)
+	// Allow hub to process UNSUB before publishing.
+	time.Sleep(30 * time.Millisecond)
 
 	// Publish after unsub: A must not receive.
 	sendFrame(t, ctxB, b, protocol.Envelope{
 		V: protocol.ProtocolVersion, Type: protocol.PUBLISH,
 		ID: "pub1", Dst: "topic:news",
 	}, []byte("x"))
-	short, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	short, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	_, _, err := a.Read(short)
+	_, data, err := a.Read(short)
 	if err == nil {
-		t.Fatal("expected no delivery after UNSUB")
+		// If something arrived, fail with detail (should not happen after UNSUB).
+		env, _, _ := protocol.DecodeFrame(data)
+		t.Fatalf("expected no delivery after UNSUB, got %s", protocol.TypeName(env.Type))
 	}
 }
 
