@@ -54,6 +54,21 @@ type Gateway struct {
 	droppedLateResp      uint64 // RESPONSE with unknown/already-consumed corr and empty dst
 	droppedUnroutable    uint64 // RESPONSE whose dst agent is offline
 	droppedDuplicateCorr uint64 // second RESPONSE for an already-delivered pending corr
+
+	// Active streams: stream id → binding established at STREAM_OPEN.
+	// STREAM_DATA/END use compact envelopes (no src/dst) and resolve via this table.
+	streamsMu sync.Mutex
+	streams   map[string]*streamBinding
+}
+
+// streamBinding routes compact STREAM_DATA/END frames to the initiator and
+// tracks ownership so disconnect can synthesize STREAM_END{aborted} (Task 3.4).
+type streamBinding struct {
+	streamID string
+	corr     string
+	src      string // producer agentId (responder)
+	dst      string // consumer agentId (initiator)
+	tenant   string
 }
 
 // NewGateway constructs a Gateway. maxFrameBytes bounds the read message size;
@@ -65,6 +80,7 @@ func NewGateway(a *auth.Authenticator, r *Registry, maxFrameBytes, queueBytes in
 		maxFrameBytes: maxFrameBytes,
 		queueBytes:    queueBytes,
 		pending:       make(map[string]*pendingWaiter),
+		streams:       make(map[string]*streamBinding),
 	}
 }
 
@@ -288,9 +304,116 @@ func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
 		g.relayRequest(ctx, conn, env, payload)
 	case protocol.RESPONSE:
 		g.relayResponse(ctx, conn, env, payload)
+	case protocol.STREAM_OPEN:
+		g.relayStreamOpen(ctx, conn, env, payload)
+	case protocol.STREAM_DATA:
+		g.relayStreamData(ctx, conn, env, payload)
+	case protocol.STREAM_END:
+		g.relayStreamEnd(ctx, conn, env, payload)
 	default:
 		// Unknown / not-yet-implemented types are ignored so the connection stays alive.
 	}
+}
+
+// relayStreamOpen binds stream→(src,dst,tenant,corr) and forwards OPEN to dst.
+// OPEN must carry dst (the original REQUEST initiator). Identity is already applied.
+func (g *Gateway) relayStreamOpen(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
+	if env.Stream == "" || env.Dst == "" {
+		return
+	}
+	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
+	if !ok {
+		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "stream target offline")
+		return
+	}
+	bind := &streamBinding{
+		streamID: env.Stream,
+		corr:     env.Corr,
+		src:      conn.AgentID(),
+		dst:      env.Dst,
+		tenant:   conn.Tenant(),
+	}
+	g.streamsMu.Lock()
+	// Last OPEN wins for a reused stream id (v1: stream ids are ULIDs, collisions rare).
+	g.streams[env.Stream] = bind
+	g.streamsMu.Unlock()
+
+	frame, err := protocol.EncodeFrame(env, payload)
+	if err != nil {
+		return
+	}
+	if err := dst.Enqueue(frame); err != nil {
+		// Binding established but delivery failed: abort binding so DATA can't orphan.
+		g.streamsMu.Lock()
+		delete(g.streams, env.Stream)
+		g.streamsMu.Unlock()
+		code := protocol.ErrQueueFull
+		if !errors.Is(err, ErrQueueFull) {
+			code = protocol.ErrNoRoute
+		}
+		g.replyErrorCorr(conn, env.Corr, code, err.Error())
+	}
+}
+
+// relayStreamData forwards a compact STREAM_DATA frame using the OPEN binding.
+// Envelope carries only type/stream/seq (hdr); Hub does not re-expand src/dst.
+func (g *Gateway) relayStreamData(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
+	if env.Stream == "" {
+		return
+	}
+	g.streamsMu.Lock()
+	bind, ok := g.streams[env.Stream]
+	g.streamsMu.Unlock()
+	if !ok {
+		return // unknown stream: drop (Task 3.5 may surface as abort)
+	}
+	// Only the producer that opened the stream may emit DATA.
+	if bind.src != conn.AgentID() || bind.tenant != conn.Tenant() {
+		return
+	}
+	dst, ok := g.registry.Lookup(bind.tenant, bind.dst)
+	if !ok {
+		// Consumer offline: abort stream (full synthesize END is Task 3.4).
+		return
+	}
+	// Preserve compact shape: do not inject src/dst into DATA (design §4.1).
+	frame, err := protocol.EncodeFrame(env, payload)
+	if err != nil {
+		return
+	}
+	_ = dst.Enqueue(frame) // backpressure abort is Task 3.5
+}
+
+// relayStreamEnd forwards STREAM_END and removes the binding (sole terminal).
+func (g *Gateway) relayStreamEnd(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
+	if env.Stream == "" {
+		return
+	}
+	g.streamsMu.Lock()
+	bind, ok := g.streams[env.Stream]
+	if ok {
+		delete(g.streams, env.Stream)
+	}
+	g.streamsMu.Unlock()
+	if !ok {
+		return
+	}
+	if bind.src != conn.AgentID() || bind.tenant != conn.Tenant() {
+		// Non-owner END: restore binding (we already deleted under the lock).
+		g.streamsMu.Lock()
+		g.streams[env.Stream] = bind
+		g.streamsMu.Unlock()
+		return
+	}
+	dst, ok := g.registry.Lookup(bind.tenant, bind.dst)
+	if !ok {
+		return
+	}
+	frame, err := protocol.EncodeFrame(env, payload)
+	if err != nil {
+		return
+	}
+	_ = dst.Enqueue(frame)
 }
 
 // relayRequest routes a REQUEST to its destination within the sender's tenant.

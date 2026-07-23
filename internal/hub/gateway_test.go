@@ -375,3 +375,97 @@ func TestRoutableResponseStillDelivered(t *testing.T) {
 		t.Fatalf("payload: %q", payload)
 	}
 }
+
+func TestStreamOpenDataEndRelay(t *testing.T) {
+	// B (responder) replies to A with STREAM_OPEN→DATA→END; A receives ordered frames.
+	// STREAM_DATA uses compact envelope (only stream + seq in hdr); Hub looks up binding.
+	_, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-b")
+
+	// A → B REQUEST (so B knows who to reply to)
+	corr := "corr-stream-1"
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.REQUEST,
+		ID: "req-1", Corr: corr, Dst: "bob-b", TTL: 5000,
+	}, []byte("stream-please"))
+
+	env, _ := readFrame(t, ctxB, b)
+	if env.Type != protocol.REQUEST {
+		t.Fatalf("B want REQUEST, got %s", protocol.TypeName(env.Type))
+	}
+
+	streamID := "01STREAMTEST"
+	// B → A STREAM_OPEN
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_OPEN,
+		ID: "so-1", Corr: corr, Stream: streamID, Dst: "alice-a",
+	}, nil)
+
+	env, _ = readFrame(t, ctxA, a)
+	if env.Type != protocol.STREAM_OPEN {
+		t.Fatalf("A want STREAM_OPEN, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Stream != streamID || env.Corr != corr {
+		t.Fatalf("open fields: stream=%q corr=%q", env.Stream, env.Corr)
+	}
+	if env.Src != "bob-b" {
+		t.Fatalf("open src: %q", env.Src)
+	}
+
+	// B → A STREAM_DATA compact (no src/dst; only stream + seq)
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_DATA,
+		Stream: streamID, Hdr: map[string]string{"seq": "0"},
+	}, []byte("tok-0"))
+
+	env, payload := readFrame(t, ctxA, a)
+	if env.Type != protocol.STREAM_DATA {
+		t.Fatalf("A want STREAM_DATA, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Stream != streamID {
+		t.Fatalf("data stream: %q", env.Stream)
+	}
+	if env.Hdr["seq"] != "0" {
+		t.Fatalf("seq: %q", env.Hdr["seq"])
+	}
+	if string(payload) != "tok-0" {
+		t.Fatalf("payload: %q", payload)
+	}
+
+	// second DATA seq=1
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_DATA,
+		Stream: streamID, Hdr: map[string]string{"seq": "1"},
+	}, []byte("tok-1"))
+	env, payload = readFrame(t, ctxA, a)
+	if env.Type != protocol.STREAM_DATA || env.Hdr["seq"] != "1" || string(payload) != "tok-1" {
+		t.Fatalf("second data: type=%s seq=%q payload=%q", protocol.TypeName(env.Type), env.Hdr["seq"], payload)
+	}
+
+	// STREAM_END
+	sendFrame(t, ctxB, b, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_END,
+		Stream: streamID, Hdr: map[string]string{"status": "ok"},
+	}, nil)
+	env, _ = readFrame(t, ctxA, a)
+	if env.Type != protocol.STREAM_END {
+		t.Fatalf("A want STREAM_END, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Hdr["status"] != "ok" {
+		t.Fatalf("status: %q", env.Hdr["status"])
+	}
+}
+
+func TestStreamDataUnknownDropped(t *testing.T) {
+	// STREAM_DATA for unknown stream is dropped (no ERROR required for v1 unknown stream).
+	g, srv := newTestGateway(t, "a:ka:alice:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_DATA,
+		Stream: "nope", Hdr: map[string]string{"seq": "0"},
+	}, []byte("x"))
+	time.Sleep(30 * time.Millisecond)
+	// nothing panics; drop stats optional
+	_ = g
+}
