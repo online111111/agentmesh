@@ -522,3 +522,101 @@ func TestSynthesizeStreamEndOnProducerDisconnect(t *testing.T) {
 		t.Fatal("stream binding should be removed after abort")
 	}
 }
+
+func TestStreamAbortOnBackpressure(t *testing.T) {
+	// Mid-stream QUEUE_FULL on consumer → whole stream aborted (no silent drop).
+	keys, err := auth.ParseKeys("a:ka:alice:default\nb:kb:bob:default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := NewGateway(auth.NewAuthenticator(keys), NewRegistry(), 1<<20, 1<<20)
+
+	// Consumer with tiny queue + blocking writer so frames stay queued.
+	bw := newBlockingWriter()
+	consumer := NewConn(bw, "alice-a", "default", 80)
+	defer consumer.Close()
+	// Producer with normal queue (collects ERROR frames).
+	pw := &passWriter{}
+	producer := NewConn(pw, "bob-b", "default", 1<<20)
+	defer producer.Close()
+
+	if err := g.registry.Register("default", "alice-a", consumer); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.registry.Register("default", "bob-b", producer); err != nil {
+		t.Fatal(err)
+	}
+
+	streamID := "stream-bp-1"
+	corr := "corr-bp-1"
+	ctx := context.Background()
+	g.relayStreamOpen(ctx, producer, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_OPEN,
+		ID: "so", Corr: corr, Stream: streamID, Dst: "alice-a",
+		Src: "bob-b", Tenant: "default",
+	}, nil)
+
+	// Drain OPEN from consumer queue into the blocking writer path by not
+	// releasing; fill remaining budget so next DATA fails.
+	// OPEN frame already enqueued; pad until full.
+	for i := 0; i < 20; i++ {
+		if err := consumer.Enqueue(make([]byte, 40)); err != nil {
+			break
+		}
+	}
+	// Confirm full
+	if err := consumer.Enqueue(make([]byte, 40)); err == nil {
+		t.Fatal("expected consumer queue full before DATA")
+	}
+
+	// DATA must abort the stream, not leave a hole.
+	g.relayStreamData(ctx, producer, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_DATA,
+		Stream: streamID, Hdr: map[string]string{"seq": "0"},
+		Src: "bob-b", Tenant: "default",
+	}, []byte("token-that-wont-fit-if-nearly-full----------------"))
+
+	// Binding removed
+	g.streamsMu.Lock()
+	_, still := g.streams[streamID]
+	g.streamsMu.Unlock()
+	if still {
+		t.Fatal("stream binding should be removed after backpressure abort")
+	}
+
+	// Producer should eventually get ERROR{QUEUE_FULL} (write loop drains).
+	deadline := time.Now().Add(2 * time.Second)
+	var saw bool
+	for time.Now().Before(deadline) {
+		pw.mu.Lock()
+		frames := append([][]byte(nil), pw.written...)
+		pw.mu.Unlock()
+		for _, f := range frames {
+			env, payload, err := protocol.DecodeFrame(f)
+			if err != nil {
+				continue
+			}
+			if env.Type == protocol.ERROR {
+				ep, _ := protocol.UnmarshalError(payload)
+				if ep.Code == protocol.ErrQueueFull {
+					saw = true
+					break
+				}
+			}
+		}
+		if saw {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !saw {
+		t.Fatal("producer did not receive QUEUE_FULL after stream abort")
+	}
+
+	// Subsequent DATA for same stream is ignored (no re-open).
+	g.relayStreamData(ctx, producer, protocol.Envelope{
+		V: protocol.ProtocolVersion, Type: protocol.STREAM_DATA,
+		Stream: streamID, Hdr: map[string]string{"seq": "1"},
+		Src: "bob-b", Tenant: "default",
+	}, []byte("orphan"))
+}

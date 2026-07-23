@@ -396,6 +396,8 @@ func (g *Gateway) relayStreamOpen(_ context.Context, conn *Conn, env protocol.En
 
 // relayStreamData forwards a compact STREAM_DATA frame using the OPEN binding.
 // Envelope carries only type/stream/seq (hdr); Hub does not re-expand src/dst.
+// On consumer queue full, the WHOLE stream is aborted (STREAM_END{aborted} +
+// QUEUE_FULL to producer) — never silently drop a mid-stream frame (§4.10).
 func (g *Gateway) relayStreamData(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
 	if env.Stream == "" {
 		return
@@ -404,7 +406,7 @@ func (g *Gateway) relayStreamData(_ context.Context, conn *Conn, env protocol.En
 	bind, ok := g.streams[env.Stream]
 	g.streamsMu.Unlock()
 	if !ok {
-		return // unknown stream: drop (Task 3.5 may surface as abort)
+		return // unknown stream: drop
 	}
 	// Only the producer that opened the stream may emit DATA.
 	if bind.src != conn.AgentID() || bind.tenant != conn.Tenant() {
@@ -412,7 +414,8 @@ func (g *Gateway) relayStreamData(_ context.Context, conn *Conn, env protocol.En
 	}
 	dst, ok := g.registry.Lookup(bind.tenant, bind.dst)
 	if !ok {
-		// Consumer offline: abort stream (full synthesize END is Task 3.4).
+		// Consumer offline: abort whole stream for the producer.
+		g.abortStream(bind, conn, "consumer offline")
 		return
 	}
 	// Preserve compact shape: do not inject src/dst into DATA (design §4.1).
@@ -420,7 +423,45 @@ func (g *Gateway) relayStreamData(_ context.Context, conn *Conn, env protocol.En
 	if err != nil {
 		return
 	}
-	_ = dst.Enqueue(frame) // backpressure abort is Task 3.5
+	if err := dst.Enqueue(frame); err != nil {
+		// Backpressure or closed: abort whole stream — no mid-stream holes.
+		g.abortStream(bind, conn, err.Error())
+	}
+}
+
+// abortStream removes the binding, notifies the consumer with STREAM_END{aborted}
+// when possible, and replies QUEUE_FULL/ERROR to the producer. Idempotent if
+// the binding was already removed by a concurrent END/disconnect.
+func (g *Gateway) abortStream(bind *streamBinding, producer *Conn, reason string) {
+	g.streamsMu.Lock()
+	cur, ok := g.streams[bind.streamID]
+	if !ok || cur != bind {
+		g.streamsMu.Unlock()
+		return
+	}
+	delete(g.streams, bind.streamID)
+	g.streamsMu.Unlock()
+
+	// Notify consumer (if still online).
+	if dst, ok := g.registry.Lookup(bind.tenant, bind.dst); ok {
+		env := protocol.Envelope{
+			V:      protocol.ProtocolVersion,
+			Type:   protocol.STREAM_END,
+			Stream: bind.streamID,
+			Corr:   bind.corr,
+			Src:    bind.src,
+			Dst:    bind.dst,
+			Tenant: bind.tenant,
+			Hdr:    map[string]string{"status": "aborted"},
+		}
+		if frame, err := protocol.EncodeFrame(env, nil); err == nil {
+			_ = dst.Enqueue(frame) // best-effort; may also fail under pressure
+		}
+	}
+	// Notify producer so it stops emitting tokens.
+	if producer != nil {
+		g.replyErrorCorr(producer, bind.corr, protocol.ErrQueueFull, reason)
+	}
 }
 
 // relayStreamEnd forwards STREAM_END and removes the binding (sole terminal).
