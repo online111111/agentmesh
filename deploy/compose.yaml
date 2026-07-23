@@ -1,0 +1,19 @@
+# Local / LAN Hub with explicit insecure opt-in for plain HTTP demos.
+# Production: set MESH_TLS_CERT/KEY or terminate TLS at a reverse proxy / Tunnel.
+services:
+  meshd:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      MESH_HOST: "0.0.0.0"
+      MESH_PORT: "8080"
+      MESH_API_KEYS: "a:ka:alice:default\nb:kb:bob:default"
+      MESH_INSECURE: "true" # demo only — prefer TLS
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
