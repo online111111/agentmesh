@@ -169,6 +169,24 @@ func (c *Client) Send(ctx context.Context, dst string, payload []byte) error {
 	return c.writeFrame(ctx, env, payload)
 }
 
+// WriteFrame encodes and writes an arbitrary envelope+payload on the data plane.
+// Used by the agent runtime to send RESPONSE (and later STREAM_*) frames.
+// The Hub still overwrites src/tenant from the connection identity.
+func (c *Client) WriteFrame(ctx context.Context, env protocol.Envelope, payload []byte) error {
+	if env.V == 0 {
+		env.V = protocol.ProtocolVersion
+	}
+	if env.Src == "" {
+		env.Src = c.agentID
+	}
+	return c.writeFrame(ctx, env, payload)
+}
+
+// Done is closed when the read loop exits (after Close or a transport error).
+func (c *Client) Done() <-chan struct{} {
+	return c.readDone
+}
+
 // Close tears down the connection. It is idempotent.
 func (c *Client) Close() error {
 	c.mu.Lock()
