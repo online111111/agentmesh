@@ -39,6 +39,25 @@ type Identity struct {
 // Error() is the stable protocol.ErrAuthFailed code string.
 var ErrAuthFailed = errors.New(protocol.ErrAuthFailed)
 
+// topicPrefix is the reserved pub/sub namespace prefix. An agentId must never
+// begin with it (DESIGN §4.8) so routable agentIds stay disjoint from topics.
+const topicPrefix = "topic:"
+
+// AllowsAgentID reports whether agentID falls within this identity's authorized
+// namespace (DESIGN §4.7/§6). The agentId must be non-empty, must not begin with
+// the reserved "topic:" prefix, and must have the identity's AgentIDPrefix as a
+// prefix. A caller registering an agentId outside this namespace must be
+// rejected with AGENTID_FORBIDDEN.
+func (id *Identity) AllowsAgentID(agentID string) bool {
+	if agentID == "" {
+		return false
+	}
+	if strings.HasPrefix(agentID, topicPrefix) {
+		return false
+	}
+	return strings.HasPrefix(agentID, id.AgentIDPrefix)
+}
+
 // ParseKeys parses a MESH_API_KEYS spec of newline-separated
 // id:secret:principal:tenant[:agentIdPrefix] entries. Blank lines are ignored
 // and surrounding whitespace is trimmed. An empty spec or any malformed line is
