@@ -47,6 +47,7 @@ type pendingResult struct {
 type Gateway struct {
 	auth          *auth.Authenticator
 	registry      *Registry
+	pubsub        *PubSub
 	maxFrameBytes int
 	queueBytes    int
 
@@ -97,6 +98,7 @@ func NewGateway(a *auth.Authenticator, r *Registry, maxFrameBytes, queueBytes in
 	return &Gateway{
 		auth:          a,
 		registry:      r,
+		pubsub:        NewPubSub(),
 		maxFrameBytes: maxFrameBytes,
 		queueBytes:    queueBytes,
 		pending:       make(map[string]*pendingWaiter),
@@ -197,6 +199,7 @@ func (g *Gateway) ServeWS(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		g.cancelInflightFrom(conn)
 		g.abortStreamsOwnedBy(conn)
+		g.pubsub.UnsubscribeAll(conn.Tenant(), conn)
 		g.registry.Remove(conn.Tenant(), conn.AgentID(), conn)
 		conn.Close()
 	}()
@@ -374,8 +377,74 @@ func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
 		g.relayStreamData(ctx, conn, env, payload)
 	case protocol.STREAM_END:
 		g.relayStreamEnd(ctx, conn, env, payload)
+	case protocol.SUBSCRIBE:
+		g.handleSubscribe(conn, env)
+	case protocol.UNSUB:
+		g.handleUnsub(conn, env)
+	case protocol.PUBLISH:
+		g.relayPublish(conn, env, payload)
 	default:
 		// Unknown / not-yet-implemented types are ignored so the connection stays alive.
+	}
+}
+
+// handleSubscribe registers the connection for a topic and replies SUBACK.
+// Subscription is effective only after SUBACK is enqueued (DESIGN §4.8).
+func (g *Gateway) handleSubscribe(conn *Conn, env protocol.Envelope) {
+	topic := TopicFromEnv(env)
+	if topic == "" {
+		g.replyError(conn, protocol.ErrNoRoute, "SUBSCRIBE requires dst topic:<name>")
+		return
+	}
+	g.pubsub.Subscribe(conn.Tenant(), topic, conn)
+	// SUBACK: echo topic in hdr; Dst is the subscriber.
+	frame, err := protocol.EncodeFrame(protocol.Envelope{
+		V:      protocol.ProtocolVersion,
+		Type:   protocol.SUBACK,
+		ID:     env.ID,
+		Dst:    conn.AgentID(),
+		Tenant: conn.Tenant(),
+		Hdr:    map[string]string{"topic": topic},
+	}, nil)
+	if err != nil {
+		return
+	}
+	_ = conn.Enqueue(frame)
+}
+
+// handleUnsub removes the connection from a topic (no ack required in v1).
+func (g *Gateway) handleUnsub(conn *Conn, env protocol.Envelope) {
+	topic := TopicFromEnv(env)
+	if topic == "" {
+		return
+	}
+	g.pubsub.Unsubscribe(conn.Tenant(), topic, conn)
+}
+
+// relayPublish fans out PUBLISH to a snapshot of subscribers (DESIGN §4.8).
+// Self-delivery is suppressed by default; hdr["self"]="1" opts in.
+// Full queues drop only that subscriber's copy (pub/sub may drop).
+func (g *Gateway) relayPublish(conn *Conn, env protocol.Envelope, payload []byte) {
+	topic := TopicFromEnv(env)
+	if topic == "" {
+		g.replyError(conn, protocol.ErrNoRoute, "PUBLISH requires dst topic:<name>")
+		return
+	}
+	env.Dst = topic // normalize
+	subs := g.pubsub.Snapshot(conn.Tenant(), topic)
+	if len(subs) == 0 {
+		return // silent success
+	}
+	selfOK := env.Hdr != nil && env.Hdr["self"] == "1"
+	frame, err := protocol.EncodeFrame(env, payload)
+	if err != nil {
+		return
+	}
+	for _, s := range subs {
+		if !selfOK && s == conn {
+			continue
+		}
+		_ = s.Enqueue(frame) // drop on full — pub/sub allows it
 	}
 }
 
@@ -657,6 +726,10 @@ func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envel
 		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "empty destination")
 		return
 	}
+	if IsTopic(env.Dst) {
+		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "REQUEST dst must be agentId, use PUBLISH for topics")
+		return
+	}
 	// Hop budget (DESIGN §4.12): 0 means exhausted → HOP_LIMIT. SDK sets
 	// DefaultMaxHops when omitted. Each forward decrements before enqueue.
 	if env.Hops == 0 {
@@ -725,6 +798,10 @@ func (g *Gateway) relayResponse(_ context.Context, conn *Conn, env protocol.Enve
 func (g *Gateway) relaySend(ctx context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
 	if env.Dst == "" {
 		g.replyError(conn, protocol.ErrNoRoute, "empty destination")
+		return
+	}
+	if IsTopic(env.Dst) {
+		g.replyError(conn, protocol.ErrNoRoute, "SEND dst must be agentId, use PUBLISH for topics")
 		return
 	}
 	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
