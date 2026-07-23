@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/online111111/agentmesh/internal/auth"
 	"github.com/online111111/agentmesh/internal/protocol"
@@ -140,7 +139,6 @@ func TestHTTPAgentsListsTenantOnly(t *testing.T) {
 	if _, ok := g.Registry().Lookup("t-b", "bob-node"); !ok {
 		t.Fatal("bob not registered")
 	}
-	_ = time.Second // keep import if unused in future
 }
 
 func TestHTTPAgentsBadToken(t *testing.T) {
