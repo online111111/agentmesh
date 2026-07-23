@@ -48,6 +48,12 @@ type Gateway struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingWaiter // corr → waiter
+
+	// drop counters (atomic via mutex) — observability for §4.6 late/unroutable drops.
+	statsMu              sync.Mutex
+	droppedLateResp      uint64 // RESPONSE with unknown/already-consumed corr and empty dst
+	droppedUnroutable    uint64 // RESPONSE whose dst agent is offline
+	droppedDuplicateCorr uint64 // second RESPONSE for an already-delivered pending corr
 }
 
 // NewGateway constructs a Gateway. maxFrameBytes bounds the read message size;
@@ -81,6 +87,8 @@ func (g *Gateway) cancelPending(corr string) {
 
 // deliverPending delivers a RESPONSE to a registered waiter. Returns true if a
 // waiter consumed it (so the frame must not also be relayed to a WS agent).
+// A missing waiter for a non-empty corr is NOT counted here — the caller decides
+// whether the frame is late (no dst) or should still be routed to a WS agent.
 func (g *Gateway) deliverPending(env protocol.Envelope, payload []byte) bool {
 	if env.Corr == "" {
 		return false
@@ -99,8 +107,30 @@ func (g *Gateway) deliverPending(env protocol.Envelope, payload []byte) bool {
 	select {
 	case w.ch <- pendingResult{env: env, payload: cp}:
 	default:
+		// Waiter channel already filled (should not happen with cap=1 + delete).
+		g.statsMu.Lock()
+		g.droppedDuplicateCorr++
+		g.statsMu.Unlock()
 	}
 	return true
+}
+
+// DropStats is a snapshot of RESPONSE drop counters (DESIGN §4.6).
+type DropStats struct {
+	Late       uint64
+	Unroutable uint64
+	Duplicate  uint64
+}
+
+// DropStats returns a snapshot of late/duplicate/unroutable RESPONSE counters.
+func (g *Gateway) DropStats() DropStats {
+	g.statsMu.Lock()
+	defer g.statsMu.Unlock()
+	return DropStats{
+		Late:       g.droppedLateResp,
+		Unroutable: g.droppedUnroutable,
+		Duplicate:  g.droppedDuplicateCorr,
+	}
 }
 
 // Registry exposes the underlying registry (used by the control plane and tests).
@@ -291,17 +321,28 @@ func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envel
 }
 
 // relayResponse delivers a RESPONSE either to an in-process pending waiter
-// (HTTP /v1/rpc) or to the destination agent connection.
+// (HTTP /v1/rpc) or to the destination agent connection. Late (unknown corr,
+// empty dst), duplicate, and unroutable RESPONSEs are dropped and counted
+// (DESIGN §4.6) — never forwarded to a random agent.
 func (g *Gateway) relayResponse(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
 	if g.deliverPending(env, payload) {
 		return
 	}
+	// No in-process waiter. If corr was set, this may be a late/duplicate of a
+	// completed /v1/rpc call (dst often empty or synthetic). Count and drop when
+	// there is no live destination agent.
 	if env.Dst == "" {
+		g.statsMu.Lock()
+		g.droppedLateResp++
+		g.statsMu.Unlock()
 		return
 	}
 	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
 	if !ok {
-		return // late/unroutable RESPONSE is dropped (Task 3.2 formalizes this)
+		g.statsMu.Lock()
+		g.droppedUnroutable++
+		g.statsMu.Unlock()
+		return
 	}
 	frame, err := protocol.EncodeFrame(env, payload)
 	if err != nil {

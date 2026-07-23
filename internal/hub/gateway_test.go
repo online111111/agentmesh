@@ -267,3 +267,111 @@ func TestGatewaySendIdentitySpoofBlocked(t *testing.T) {
 		t.Fatalf("spoofed tenant leaked: got %q", env.Tenant)
 	}
 }
+
+func TestDropLateResponse(t *testing.T) {
+	// RESPONSE with no pending waiter and empty dst is dropped and counted late.
+	g, srv := newTestGateway(t, "a:ka:alice:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.RESPONSE,
+		ID:   "late-1",
+		Corr: "no-such-corr",
+		// empty Dst → late drop
+	}, []byte("stale"))
+
+	// Give the hub a moment to process; nothing should be delivered back.
+	time.Sleep(30 * time.Millisecond)
+	st := g.DropStats()
+	if st.Late < 1 {
+		t.Fatalf("expected late drop >=1, got %+v", st)
+	}
+}
+
+func TestDropUnroutableResponse(t *testing.T) {
+	// RESPONSE targeting an offline agent is dropped and counted unroutable.
+	g, srv := newTestGateway(t, "a:ka:alice:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.RESPONSE,
+		ID:   "ur-1",
+		Corr: "corr-offline",
+		Dst:  "alice-nobody",
+	}, []byte("x"))
+
+	time.Sleep(30 * time.Millisecond)
+	st := g.DropStats()
+	if st.Unroutable < 1 {
+		t.Fatalf("expected unroutable drop >=1, got %+v", st)
+	}
+}
+
+func TestDropDuplicatePendingResponse(t *testing.T) {
+	// First RESPONSE delivers to /v1/rpc waiter; a second with same corr and
+	// empty dst is late-dropped (waiter already removed).
+	g, srv := newTestGateway(t, "a:ka:alice:default")
+	// Install a pending waiter as /v1/rpc would.
+	corr := "corr-dup-test"
+	w := g.registerPending(corr)
+	defer g.cancelPending(corr)
+
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.RESPONSE,
+		ID:   "dup-1",
+		Corr: corr,
+		Src:  "alice-a",
+	}, []byte("first"))
+
+	select {
+	case res := <-w.ch:
+		if string(res.payload) != "first" {
+			t.Fatalf("payload: %q", res.payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first RESPONSE not delivered to waiter")
+	}
+
+	// Second RESPONSE with same corr, empty dst → late (waiter gone).
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.RESPONSE,
+		ID:   "dup-2",
+		Corr: corr,
+	}, []byte("second"))
+	time.Sleep(30 * time.Millisecond)
+	st := g.DropStats()
+	if st.Late < 1 {
+		t.Fatalf("expected late drop for duplicate corr, got %+v", st)
+	}
+}
+
+func TestRoutableResponseStillDelivered(t *testing.T) {
+	// RESPONSE with live dst is still relayed (agent-to-agent Request path).
+	_, srv := newTestGateway(t, "a:ka:alice:default\nb:kb:bob:default")
+	a, ctxA := connectAgent(t, srv, "ka", "alice-a")
+	b, ctxB := connectAgent(t, srv, "kb", "bob-b")
+
+	sendFrame(t, ctxA, a, protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.RESPONSE,
+		ID:   "ok-1",
+		Corr: "corr-ok",
+		Dst:  "bob-b",
+	}, []byte("pong"))
+
+	env, payload := readFrame(t, ctxB, b)
+	if env.Type != protocol.RESPONSE {
+		t.Fatalf("want RESPONSE, got %s", protocol.TypeName(env.Type))
+	}
+	if env.Src != "alice-a" {
+		t.Fatalf("src: %q", env.Src)
+	}
+	if string(payload) != "pong" {
+		t.Fatalf("payload: %q", payload)
+	}
+}
