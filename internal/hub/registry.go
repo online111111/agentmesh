@@ -93,6 +93,20 @@ func (r *Registry) Register(tenant, agentID string, s Sender) error {
 	return nil
 }
 
+// RegisterOrTakeover atomically replaces any existing sender for (tenant, agentID)
+// with s, returning the previous Sender (if any) so the caller can tear it down.
+// The new binding is installed under the shard lock before the old sender is
+// returned, so a concurrent Lookup never sees a gap.
+func (r *Registry) RegisterOrTakeover(tenant, agentID string, s Sender) (prev Sender) {
+	k := regKey{tenant: tenant, agentID: agentID}
+	sh := r.shardFor(k)
+	sh.mu.Lock()
+	prev = sh.senders[k]
+	sh.senders[k] = s
+	sh.mu.Unlock()
+	return prev
+}
+
 // Lookup returns the Sender registered for (tenant, agentID), if any.
 func (r *Registry) Lookup(tenant, agentID string) (Sender, bool) {
 	k := regKey{tenant: tenant, agentID: agentID}

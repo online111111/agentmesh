@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +20,12 @@ const defaultHeartbeatMs = 15000
 // DefaultMaxHops is the default remaining hop budget when a client omits hops
 // (DESIGN §4.12, MESH_MAX_HOPS=8).
 const DefaultMaxHops uint8 = 8
+
+// Agent conflict policy (DESIGN §4.7 / MESH_AGENT_CONFLICT).
+const (
+	ConflictReject   = "reject"   // default: refuse new connection with DUPLICATE_AGENT_ID
+	ConflictTakeover = "takeover" // same-principal only: tear down old, install new
+)
 
 // wsWriter adapts a *websocket.Conn to the frameWriter interface Conn expects,
 // writing each frame as a single binary message.
@@ -50,6 +58,7 @@ type Gateway struct {
 	pubsub        *PubSub
 	maxFrameBytes int
 	queueBytes    int
+	conflict      string // ConflictReject | ConflictTakeover
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingWaiter // corr → waiter
@@ -95,12 +104,17 @@ type streamBinding struct {
 // NewGateway constructs a Gateway. maxFrameBytes bounds the read message size;
 // queueBytes is the per-connection send-queue byte budget.
 func NewGateway(a *auth.Authenticator, r *Registry, maxFrameBytes, queueBytes int) *Gateway {
+	conflict := ConflictReject
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("MESH_AGENT_CONFLICT"))); v == ConflictTakeover {
+		conflict = ConflictTakeover
+	}
 	return &Gateway{
 		auth:          a,
 		registry:      r,
 		pubsub:        NewPubSub(),
 		maxFrameBytes: maxFrameBytes,
 		queueBytes:    queueBytes,
+		conflict:      conflict,
 		pending:       make(map[string]*pendingWaiter),
 		streams:       make(map[string]*streamBinding),
 		inflight:      make(map[string]*inflightReq),
@@ -295,11 +309,29 @@ func (g *Gateway) handshake(ctx context.Context, ws *websocket.Conn) (*Conn, err
 	}
 
 	conn := NewConn(&wsWriter{ws: ws}, hello.AgentID, identity.Tenant, g.queueBytes)
+	// Store principal on conn for same-principal takeover checks.
+	conn.principal = identity.Principal
 
-	if err := g.registry.Register(identity.Tenant, hello.AgentID, conn); err != nil {
-		conn.Close()
-		writeError(ctx, ws, protocol.ErrDuplicateAgentID, "agentId already registered in tenant")
-		return nil, err
+	if g.conflict == ConflictTakeover {
+		prev := g.registry.RegisterOrTakeover(identity.Tenant, hello.AgentID, conn)
+		if prev != nil {
+			// Only same principal may takeover (DESIGN §4.7/§6).
+			if old, ok := prev.(*Conn); ok && old.principal != "" && old.principal != identity.Principal {
+				// Roll back: restore old, reject new.
+				_ = g.registry.RegisterOrTakeover(identity.Tenant, hello.AgentID, prev)
+				conn.Close()
+				writeError(ctx, ws, protocol.ErrDuplicateAgentID, "agentId held by different principal")
+				return nil, errors.New("takeover denied: different principal")
+			}
+			// Notify old connection then fully tear it down.
+			g.takeoverOld(prev)
+		}
+	} else {
+		if err := g.registry.Register(identity.Tenant, hello.AgentID, conn); err != nil {
+			conn.Close()
+			writeError(ctx, ws, protocol.ErrDuplicateAgentID, "agentId already registered in tenant")
+			return nil, err
+		}
 	}
 
 	// Registration succeeded: reply WELCOME.
@@ -309,6 +341,40 @@ func (g *Gateway) handshake(ctx context.Context, ws *websocket.Conn) (*Conn, err
 		return nil, err
 	}
 	return conn, nil
+}
+
+// takeoverOld delivers SESSION_TAKEOVER to the old connection and tears it down.
+// Registry entry has already been replaced by the new connection.
+func (g *Gateway) takeoverOld(prev Sender) {
+	old, ok := prev.(*Conn)
+	if !ok {
+		prev.Close()
+		return
+	}
+	// Deliver SESSION_TAKEOVER before teardown (DESIGN §4.7): write directly so
+	// Close does not wipe the notice from the queue.
+	ep, err := protocol.MarshalError(protocol.ErrorPayload{
+		Code:    protocol.ErrSessionTakeover,
+		Message: "connection superseded by same principal",
+	})
+	if err == nil {
+		frame, err := protocol.EncodeFrame(protocol.Envelope{
+			V:      protocol.ProtocolVersion,
+			Type:   protocol.ERROR,
+			Dst:    old.AgentID(),
+			Tenant: old.Tenant(),
+		}, ep)
+		if err == nil {
+			wctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_ = old.WriteDirect(wctx, frame)
+			cancel()
+		}
+	}
+	// Cancel inflight/streams owned by the old conn, drop its subscriptions.
+	g.cancelInflightFrom(old)
+	g.abortStreamsOwnedBy(old)
+	g.pubsub.UnsubscribeAll(old.Tenant(), old)
+	old.Close()
 }
 
 // readLoop reads frames from the client until the connection closes. It couples

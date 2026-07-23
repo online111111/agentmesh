@@ -30,8 +30,9 @@ type frameWriter interface {
 // message count, to prevent OOM under many connections. Conn implements the
 // registry's Sender interface.
 type Conn struct {
-	agentID string
-	tenant  string
+	agentID   string
+	tenant    string
+	principal string // authenticated principal (for same-principal takeover)
 
 	writer     frameWriter
 	maxBytes   int
@@ -138,6 +139,20 @@ func (c *Conn) dequeue() ([]byte, bool) {
 	c.queue = c.queue[1:]
 	c.curBytes -= len(frame)
 	return frame, true
+}
+
+// WriteDirect writes one frame on the transport immediately, bypassing the
+// send queue. Used for SESSION_TAKEOVER so the notice is not lost when Close
+// clears the queue. Fails if the connection is already closed.
+func (c *Conn) WriteDirect(ctx context.Context, frame []byte) error {
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return errConnClosed
+	}
+	w := c.writer
+	c.mu.Unlock()
+	return w.WriteFrame(ctx, frame)
 }
 
 // Close tears down the connection: it cancels the write goroutine's context and

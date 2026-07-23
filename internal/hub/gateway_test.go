@@ -758,3 +758,51 @@ func TestMultiHopRequest(t *testing.T) {
 		t.Fatalf("src: %q", env.Src)
 	}
 }
+
+func TestTakeoverSamePrincipal(t *testing.T) {
+	// With conflict=takeover, a second HELLO for the same agentId from the same
+	// principal replaces the old connection; old conn gets SESSION_TAKEOVER.
+	t.Setenv("MESH_AGENT_CONFLICT", "takeover")
+	g, srv := newTestGateway(t, "a:ka:alice:default")
+	// Force gateway to re-read policy (NewGateway reads env)
+	g.conflict = ConflictTakeover
+
+	old, ctxOld := connectAgent(t, srv, "ka", "alice-a")
+	// New connection same agentId
+	newC, ctxNew := connectAgent(t, srv, "ka", "alice-a")
+	_ = ctxNew
+	_ = newC
+
+	// Old should receive SESSION_TAKEOVER ERROR then close
+	env, payload := readFrame(t, ctxOld, old)
+	if env.Type != protocol.ERROR {
+		t.Fatalf("old want SESSION_TAKEOVER ERROR, got %s", protocol.TypeName(env.Type))
+	}
+	ep, _ := protocol.UnmarshalError(payload)
+	if ep.Code != protocol.ErrSessionTakeover {
+		t.Fatalf("code: %s", ep.Code)
+	}
+
+	// New conn is the registered one
+	_, ok := g.registry.Lookup("default", "alice-a")
+	if !ok {
+		t.Fatal("agent not registered after takeover")
+	}
+}
+
+func TestTakeoverRejectDefault(t *testing.T) {
+	// Default reject: second HELLO gets DUPLICATE_AGENT_ID
+	_, srv := newTestGateway(t, "a:ka:alice:default")
+	_, _ = connectAgent(t, srv, "ka", "alice-a")
+	c, ctx := dialWS(t, srv)
+	hp, _ := protocol.MarshalHello(protocol.Hello{Token: "ka", AgentID: "alice-a", V: 1})
+	sendFrame(t, ctx, c, protocol.Envelope{V: 1, Type: protocol.HELLO}, hp)
+	env, payload := readFrame(t, ctx, c)
+	if env.Type != protocol.ERROR {
+		t.Fatalf("want ERROR, got %s", protocol.TypeName(env.Type))
+	}
+	ep, _ := protocol.UnmarshalError(payload)
+	if ep.Code != protocol.ErrDuplicateAgentID {
+		t.Fatalf("code: %s", ep.Code)
+	}
+}
