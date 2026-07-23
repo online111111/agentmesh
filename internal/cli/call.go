@@ -69,7 +69,7 @@ func Call(ctx context.Context, opt CallOptions) (*CallResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cli: rpc: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	respBody, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("cli: read body: %w", err)

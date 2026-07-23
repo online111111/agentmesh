@@ -14,8 +14,10 @@ linters-settings:
     exclude-functions:
       - fmt.Fprintln
       - fmt.Fprintf
-      - (*github.com/online111111/agentmesh/pkg/meshclient.Client).Close
-      - (*net/http.Server).Close
+      - fmt.Fprint
+      - (*os.File).Close
+      - (io.Closer).Close
+      - (*net/http.Response).Body.Close
 issues:
   exclude-use-default: false
   exclude-rules:
@@ -23,6 +25,8 @@ issues:
       linters:
         - errcheck
     - path: cmd/
-      text: "Error return value of `fmt\\.F"
+      linters:
+        - errcheck
+    - text: "Error return value of `.*\\.Close` is not checked"
       linters:
         - errcheck

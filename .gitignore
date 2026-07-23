@@ -30,3 +30,4 @@ scripts/autopilot-watchdog.sh
 .pi-subagents/
 dist/
 sdk/typescript/package-lock.json
+*.pyc
