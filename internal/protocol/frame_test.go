@@ -215,3 +215,66 @@ func TestDecodeFrameTooBig(t *testing.T) {
 		t.Fatalf("err = %q, want %q", err.Error(), ErrFrameTooBig)
 	}
 }
+
+func TestDecodeFrameMalformed(t *testing.T) {
+	// Build a valid frame to derive a truncated variant.
+	valid, err := EncodeFrame(Envelope{V: ProtocolVersion, Type: SEND, Src: "a", Dst: "b"}, []byte("pl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// env_len that overruns remaining bytes.
+	var overrun []byte
+	overrun = append(overrun, byte(SEND))
+	var lb [binary.MaxVarintLen64]byte
+	n := binary.PutUvarint(lb[:], 100)
+	overrun = append(overrun, lb[:n]...)
+	overrun = append(overrun, 0x90, 0x01) // far fewer than 100 bytes
+
+	// Corrupted msgpack envelope: declares a small env_len of junk bytes.
+	var corrupt []byte
+	corrupt = append(corrupt, byte(SEND))
+	n2 := binary.PutUvarint(lb[:], 3)
+	corrupt = append(corrupt, lb[:n2]...)
+	corrupt = append(corrupt, 0xc1, 0xc1, 0xc1) // 0xc1 is "never used" in msgpack
+
+	// Envelope that is a valid msgpack array but wrong arity.
+	var wrongArity bytes.Buffer
+	enc := msgpack.NewEncoder(&wrongArity)
+	_ = enc.EncodeArrayLen(3)
+	_ = enc.EncodeUint(1)
+	_ = enc.EncodeUint(uint64(SEND))
+	_ = enc.EncodeString("id")
+	var badArity []byte
+	badArity = append(badArity, byte(SEND))
+	n3 := binary.PutUvarint(lb[:], uint64(wrongArity.Len()))
+	badArity = append(badArity, lb[:n3]...)
+	badArity = append(badArity, wrongArity.Bytes()...)
+
+	cases := []struct {
+		name string
+		buf  []byte
+	}{
+		{"empty", nil},
+		{"only_type", []byte{byte(SEND)}},
+		{"truncated_varint", []byte{byte(SEND), 0x80}}, // continuation bit set, no more bytes
+		{"env_overrun", overrun},
+		{"corrupt_envelope", corrupt},
+		{"wrong_arity", badArity},
+		{"truncated_env", valid[:len(valid)-3]}, // chop into envelope/payload region
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("DecodeFrame panicked on %s: %v", c.name, r)
+				}
+			}()
+			_, _, err := DecodeFrame(c.buf)
+			if err == nil {
+				t.Fatalf("expected error for malformed frame %q", c.name)
+			}
+		})
+	}
+}
