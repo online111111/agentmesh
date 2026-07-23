@@ -58,7 +58,9 @@ type Gateway struct {
 	pubsub        *PubSub
 	maxFrameBytes int
 	queueBytes    int
-	conflict      string // ConflictReject | ConflictTakeover
+	conflict      string       // ConflictReject | ConflictTakeover
+	msgLimiter    *RateLimiter // per agentId msg/s
+	ipLimiter     *RateLimiter // per IP connect attempts
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingWaiter // corr → waiter
@@ -115,6 +117,8 @@ func NewGateway(a *auth.Authenticator, r *Registry, maxFrameBytes, queueBytes in
 		maxFrameBytes: maxFrameBytes,
 		queueBytes:    queueBytes,
 		conflict:      conflict,
+		msgLimiter:    NewRateLimiter(envFloat("MESH_AGENT_MSG_RATE", 200), envFloat("MESH_AGENT_MSG_BURST", 50)),
+		ipLimiter:     NewRateLimiter(envFloat("MESH_IP_CONN_RATE", 20), envFloat("MESH_IP_CONN_BURST", 10)),
 		pending:       make(map[string]*pendingWaiter),
 		streams:       make(map[string]*streamBinding),
 		inflight:      make(map[string]*inflightReq),
@@ -192,6 +196,12 @@ func (g *Gateway) Registry() *Registry { return g.registry }
 // ServeWS is the http.HandlerFunc that upgrades to WebSocket and runs the
 // connection lifecycle.
 func (g *Gateway) ServeWS(w http.ResponseWriter, r *http.Request) {
+	// Per-IP connect rate limit (anti-flood). Apply before Accept cost is sunk.
+	ip := clientIP(r)
+	if g.ipLimiter != nil && !g.ipLimiter.Allow(ip) {
+		http.Error(w, `{"error":"RATE_LIMITED"}`, http.StatusTooManyRequests)
+		return
+	}
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{})
 	if err != nil {
 		return // Accept already wrote an HTTP error.
@@ -427,6 +437,14 @@ func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
 		return
 	}
 	env = applyIdentity(env, conn.AgentID(), conn.Tenant())
+
+	// Per-agent message rate limit (skip HELLO — already past handshake).
+	if g.msgLimiter != nil && env.Type != protocol.HELLO && env.Type != protocol.PING && env.Type != protocol.PONG {
+		if !g.msgLimiter.Allow(conn.Tenant() + "/" + conn.AgentID()) {
+			g.replyError(conn, protocol.ErrRateLimited, "agent message rate exceeded")
+			return
+		}
+	}
 
 	switch env.Type {
 	case protocol.SEND:
