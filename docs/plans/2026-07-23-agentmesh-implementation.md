@@ -101,9 +101,14 @@ go build ./... && go test ./... && go vet ./... && gofmt -l . | (! grep .)
 
 **Step 1 (RED):** 测试 `EncodeFrame` 产出:第 1 字节 = env.Type;随后 varint = envelope 字节长;末尾 payload 原样附加。用固定输入断言前缀字节与 payload 尾部完全相等(证明 payload 未被改写)。
 **Step 2:** RED fail。
-**Step 3 (GREEN):** msgpack 序列化 envelope(整型键:用 `msgpack:"1"` 等 tag 或 array 编码),varint 写长度,拼 payload。
-**Step 4:** pass。
+**Step 3 (GREEN):** msgpack 序列化 envelope,varint 写长度,拼 payload。
 **Step 5 (commit):** `feat(protocol): implement split-frame encoder (routing header + opaque payload)`
+
+> **🔒 B2 冻结约束(跨语言字节一致的根,不可两可):** envelope **必须**编码为**定长 positional msgpack 数组**(fixarray),**禁止 string/int-keyed map**,**禁止 omitempty**。
+> - 字段顺序固定为 §4.2 表序,共 11 槽:`[v, type, id, corr, stream, src, dst, tenant, ttl, hops, hdr]`。每槽必现,空值显式编码(空串 `""`、0、nil)。
+> - 整数用 msgpack 最小长度编码(三库默认一致)。
+> - 理由:map 在 vmihailenco(Go)/ msgpack(Python)/ @msgpack/msgpack(TS)三库间键序与 map 头编码不可靠一致,会在 P6 引爆已冻结的 wire。positional 数组顺序天然确定。
+> - **🔒 B3 `hdr` 子 map 确定性:** `hdr`(第 11 槽,`map[string]string`)编码前**键必须升序排序**(Go `enc.SetSortMapKeys(true)`;Python 打包前 `sorted`;TS `sortKeys:true`)。testvectors 的 hdr 样本键必须多于 1 个以暴露排序问题。
 
 ---
 
@@ -115,9 +120,11 @@ go build ./... && go test ./... && go vet ./... && gofmt -l . | (! grep .)
 - Modify: `internal/protocol/frame.go`(`func DecodeFrame(buf []byte) (Envelope, []byte, error)`)
 - Test: `internal/protocol/frame_test.go`
 
-**Step 1 (RED):** round-trip 测试:Encode 后 Decode 得回等价 envelope;断言返回的 payload slice 与原 buf **共享底层数组**(`&payload[0] == &buf[offset]`,用 unsafe 或 cap 检查);`env_len` 超 `maxFrameBytes` 在分配前返回 `FRAME_TOO_BIG`。
+**Step 1 (RED):** round-trip 测试:Encode 后 Decode 得回等价 envelope;断言返回的 payload slice 与原 buf **共享底层数组**;`env_len` 超 `maxFrameBytes` 在分配前返回 `FRAME_TOO_BIG`。
 **Step 2–4:** RED→GREEN→pass。
 **Step 5 (commit):** `feat(protocol): implement zero-copy split-frame decoder`
+
+> **N2 别名断言正确姿势:** 用 `unsafe.SliceData(payload) == unsafe.SliceData(buf[offset:])` 比较底层指针(比 `&payload[0]` 稳)。**`len(payload)==0` 时跳过别名断言**(空 slice 取 `&payload[0]` 越界 panic)。payload 从不进 msgpack(只解 envelope 段),因此天然零拷贝、无假绿风险。
 
 ---
 
@@ -152,15 +159,40 @@ go build ./... && go test ./... && go vet ./... && gofmt -l . | (! grep .)
 **Objective:** §7 SDK 一致性根:固定输入的 canonical 帧字节(hex)+ JSON 表达,供三语言 SDK 断言。
 
 **Files:**
-- Create: `internal/protocol/testvectors.json`(覆盖每个 type、含 stream 帧、含空 payload、含 hdr、含多字节 UTF-8)
+- Create: `internal/protocol/testvectors.json`(见下方**必须覆盖清单**)
 - Create: `internal/protocol/testvectors_test.go`(读 json,对每条 vector 断言 Encode 输出 hex 完全一致 + Decode 往返一致)
 - Create: `internal/protocol/testvectors.go`(`GenerateVectors()` 可重生成)
 
-**Step 1 (RED):** 测试加载 testvectors.json,逐条 Encode → hex 比对。首次先写死几条期望 hex(手算/固定),失败驱动实现稳定编码顺序。
-**Step 2–4:** RED→GREEN→pass。**关键:** envelope 字段编码顺序必须确定(整型键升序或固定 array 顺序),否则跨语言不一致。
+**必须覆盖清单(B4 显式枚举,不可笼统"含 stream 帧"):**
+- §4.3 全部 21 个 type 值各至少一条 vector。
+- **流帧三态独立形状**(与普通全字段 envelope 不同,P0 就冻结,防 P3 改已冻结 wire):
+  - `STREAM_OPEN`:envelope 带 `{type, corr, stream}`(绑定到某 corr)。
+  - `STREAM_DATA`:**精简形状**,envelope 只带 `{type, stream, seq}`,**不重复** id/src/dst/tenant/corr。注意:positional 数组仍是 11 槽,但除这几槽外均为空值——vector 要固化这一"精简即空槽"的字节表达。
+  - `STREAM_END`:`{type, stream, status}`,status 三态各一条:`ok`/`error`/`aborted`;含 `usage` 的可选一条。
+- 边界样本:空 payload;含 payload;**hdr 含 ≥2 键**(暴露 B3 排序);多字节 UTF-8 payload 与 agentId。
+
+**Step 1 (RED):** 测试加载 testvectors.json,逐条 Encode → hex 比对。首次先写死几条期望 hex,失败驱动实现稳定编码顺序。
+**Step 2–4:** RED→GREEN→pass。**关键:** envelope 必须是定长 positional 数组(见 Task 0.4 B2 约束),hdr 键升序(B3)。
 **Step 5 (commit):** `feat(protocol): freeze wire format with cross-language golden test vectors`
 
-> **P0 出口:** `go test ./internal/protocol/...` 全绿;testvectors.json 冻结;wire 协议锁定。此后改帧格式需显式版本升级。
+> **P0 出口:** `go test ./internal/protocol/...` 全绿;testvectors.json 冻结(含全 21 type + 流三态);wire 协议锁定。此后改帧格式需显式版本升级。
+
+---
+
+### Task 0.9(N3 前置抽检):Python/TS 最小解码抽检
+
+**Objective:** 在建完整 SDK(P6)前,用极小脚本证明 Go 黄金样本能被 Python 和 TS 的 msgpack 库**逐字节解出并重编码一致**,提前抓 B2/B3 类漂移,避免 P0→P6 长潜伏。
+
+**Files:**
+- Create: `internal/protocol/spotcheck/decode_check.py`(读 testvectors.json 取 3 条:普通帧、hdr≥2 键、STREAM_DATA;用 `msgpack` 解 envelope 数组 + 重编码断言 hex 一致)
+- Create: `internal/protocol/spotcheck/decode_check.mjs`(同上,用 `@msgpack/msgpack`)
+- Create: `internal/protocol/spotcheck/README.md`(如何跑:`python3 decode_check.py` / `node decode_check.mjs`)
+
+**Step 1 (RED):** 跑脚本,若 Go 用了 map 编码或 hdr 未排序,Python/TS 重编码 hex 会 ≠ Go 黄金 hex → 失败。
+**Step 2–4:** 确认三语言对 positional 数组 + sorted hdr 字节一致 → 绿。
+**Step 5 (commit):** `test(protocol): cross-language decode spot-check (python/ts) for wire parity`
+
+> 若此抽检不通过,**必须回头改 Task 0.4 编码**再冻结——这是 B2/B3 的早期护栏。
 
 ---
 
@@ -199,12 +231,14 @@ go build ./... && go test ./... && go vet ./... && gofmt -l . | (! grep .)
 **Objective:** §5 分片注册表,key=`struct{tenant,agentId}`,原子 CAS 注册。
 
 **Files:**
-- Create: `internal/hub/registry.go`(`Register(tenant,agentID string, conn *Conn) error`(冲突返回 `DUPLICATE_AGENT_ID`)、`Lookup`、`Remove`、`ListByTenant`)
-- Test: `internal/hub/registry_test.go`
+- Create: `internal/hub/registry.go`(先定义 `type Sender interface { Enqueue(frame []byte) error; Close() }`;`Register(tenant,agentID string, s Sender) error`(冲突返回 `DUPLICATE_AGENT_ID`)、`Lookup(tenant,agentID) (Sender,bool)`、`Remove`、`ListByTenant`)
+- Test: `internal/hub/registry_test.go`(用 fake Sender,不依赖 Conn)
 
 **Step 1 (RED):** 注册后可查;重复注册返回 DUPLICATE_AGENT_ID;不同 tenant 同 agentId 互不干扰;并发 100 goroutine 注册无 race(`go test -race`)。
 **Step 2–4:** RED→GREEN→pass。用分片 map + RWMutex。
 **Step 5 (commit):** `feat(hub): sharded agent registry with atomic registration`
+
+> **🔒 B1 依赖解耦:** 注册表**必须**依赖最小接口 `Sender`,**不得**引用 Task 1.4 才定义的具体 `*Conn`(否则 1.3 结束 `go build ./...` 因 Conn 未定义失败,无法单 commit)。Task 1.4 的 `Conn` 实现 `Sender` 即可。测试用 fake Sender。
 
 ---
 
@@ -531,5 +565,8 @@ go build ./... && go test ./... && go vet ./... && gofmt -l . | (! grep .)
 - 进度追加到 `/tmp/pi-agentmesh-progress.md`:`Task X.Y: DONE - <sha>`。
 - 卡住 3 次跳过并记 `/tmp/agentmesh-skipped.md`,继续下一个。
 - 需要外部基础设施(Docker/公网)不可用时用内存 fake/跳过并在 commit 注明。
-- Full gate 每任务跑;golangci-lint 在 Task 6.7 前用 `go vet + gofmt` 兜底。
+- Full gate 每任务跑;golangci-lint 在 Task 6.7 前用 `go vet + gofmt` 兜底。**(N1)忽略设计 §11 门禁块里的 `golangci-lint run`——P0–P5 一律以本文件顶部的门禁块为准,早期跑 lint 会失败。**
 - Hermes 监督:关键任务(P0 全部、1.5–1.7、1.10、3.3–3.6、4.1–4.2)做规格+质量双审再放行。
+- **(N5)执行前拆分 epic 任务:** Task 1.5(WS 升级+首帧+鉴权+AllowsAgentID+注册+WELCOME+错误分支)、1.9(/v1/rpc 异步关联+超时+NO_ROUTE)、1.10(server+config+TLS 三分支+端到端)、3.3(流式全链+SDK 迭代器)、3.8(pub/sub 全套)明显超 5 分钟。轮到执行时先拆成 2–4 个子任务(各自 RED→GREEN→commit),避免触发"卡 3 次跳过"。
+- **(N6)P3–P7 补 per-task 测试命令:** 这些阶段目前只给 Files/Commit;派发某任务前,Hermes 在派发 context 里补上具体 `go test ./internal/hub/ -run TestXxx -race -v` 命令,支撑逐任务 RED。
+- **(N4)RED 性质:** 纯定义类任务(0.2 常量、0.3 struct)首次引用符号时 RED 表现为"编译不过/符号未定义",是 Go 固有现象,可接受,不必强行造行为失败。
