@@ -25,3 +25,6 @@ sdk/typescript/dist/
 .idea/
 .vscode/
 .pi/
+scripts/pi-autopilot-chain.sh
+scripts/autopilot-watchdog.sh
+.pi-subagents/
