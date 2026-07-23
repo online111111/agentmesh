@@ -85,12 +85,11 @@ type Gateway struct {
 // inflightReq tracks an open REQUEST from initiator → target until RESPONSE,
 // STREAM_END, explicit CANCEL, or initiator disconnect.
 type inflightReq struct {
-	corr     string
-	from     string // initiator agentId
-	to       string // target agentId
-	tenant   string
-	timer    *time.Timer
-	cancelFn func() // stops timer; set after construction
+	corr   string
+	from   string // initiator agentId
+	to     string // target agentId
+	tenant string
+	timer  *time.Timer
 }
 
 // streamBinding routes compact STREAM_DATA/END frames to the initiator and

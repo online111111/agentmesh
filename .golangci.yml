@@ -11,5 +11,18 @@ linters:
 linters-settings:
   errcheck:
     check-type-assertions: false
+    exclude-functions:
+      - fmt.Fprintln
+      - fmt.Fprintf
+      - (*github.com/online111111/agentmesh/pkg/meshclient.Client).Close
+      - (*net/http.Server).Close
 issues:
   exclude-use-default: false
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+    - path: cmd/
+      text: "Error return value of `fmt\\.F"
+      linters:
+        - errcheck

@@ -45,7 +45,6 @@ type Client struct {
 	ws      *websocket.Conn
 	agentID string
 	session string
-	tenant  string // filled from first overwriten inbound / WELCOME path (Hub-bound)
 
 	mu       sync.Mutex
 	onMsg    MessageHandler

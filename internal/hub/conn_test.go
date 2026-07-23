@@ -40,12 +40,6 @@ func (w *blockingWriter) WriteFrame(ctx context.Context, frame []byte) error {
 	return nil
 }
 
-func (w *blockingWriter) count() int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return len(w.written)
-}
-
 // passWriter writes without blocking, recording frames.
 type passWriter struct {
 	mu      sync.Mutex
