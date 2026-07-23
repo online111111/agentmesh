@@ -52,6 +52,54 @@ type Client struct {
 	closed   bool
 	closeCh  chan struct{}
 	readDone chan struct{}
+
+	// pending corr → waiter for Request/RESPONSE (and later streams).
+	pending map[string]*corrWaiter
+}
+
+// corrWaiter is a one-shot RESPONSE waiter keyed by corr.
+type corrWaiter struct {
+	ch chan Response
+}
+
+// Response is a successful REQUEST reply.
+type Response struct {
+	From    string
+	Payload []byte
+	Corr    string
+	Env     protocol.Envelope
+}
+
+// RPCError is a Hub/SDK application error carrying a stable protocol code
+// (TIMEOUT, NO_ROUTE, CANCELLED, ...).
+type RPCError struct {
+	Code    string
+	Message string
+}
+
+func (e *RPCError) Error() string {
+	if e.Message == "" {
+		return e.Code
+	}
+	return e.Code + ": " + e.Message
+}
+
+// IsTimeout reports whether err is (or wraps) a TIMEOUT RPCError.
+func IsTimeout(err error) bool {
+	var re *RPCError
+	if errors.As(err, &re) {
+		return re.Code == protocol.ErrTimeout
+	}
+	return false
+}
+
+// IsRPCCode reports whether err is an RPCError with the given protocol code.
+func IsRPCCode(err error, code string) bool {
+	var re *RPCError
+	if errors.As(err, &re) {
+		return re.Code == code
+	}
+	return false
 }
 
 // Dial connects to the Hub, sends HELLO, and returns a Client after WELCOME.
@@ -138,6 +186,7 @@ func Dial(ctx context.Context, opt Options) (*Client, error) {
 		session:  welcome.Session,
 		closeCh:  make(chan struct{}),
 		readDone: make(chan struct{}),
+		pending:  make(map[string]*corrWaiter),
 	}
 	go c.readLoop()
 	return c, nil
@@ -167,6 +216,91 @@ func (c *Client) Send(ctx context.Context, dst string, payload []byte) error {
 		Dst:  dst,
 	}
 	return c.writeFrame(ctx, env, payload)
+}
+
+// Request sends a REQUEST with a fresh corr and waits for the matching RESPONSE
+// (or ERROR / TIMEOUT). ttlMs is the relative timeout in milliseconds; values
+// ≤0 default to 30s. The Hub overwrites src/tenant from the connection identity.
+func (c *Client) Request(ctx context.Context, dst string, payload []byte, ttlMs int32) (*Response, error) {
+	if dst == "" {
+		return nil, errors.New("meshclient: dst is required")
+	}
+	if ttlMs <= 0 {
+		ttlMs = 30000
+	}
+	corr := protocol.NewID()
+	w := &corrWaiter{ch: make(chan Response, 1)}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errors.New("meshclient: closed")
+	}
+	c.pending[corr] = w
+	c.mu.Unlock()
+	defer c.clearPending(corr)
+
+	env := protocol.Envelope{
+		V:    protocol.ProtocolVersion,
+		Type: protocol.REQUEST,
+		ID:   protocol.NewID(),
+		Corr: corr,
+		Src:  c.agentID,
+		Dst:  dst,
+		TTL:  ttlMs,
+	}
+	if err := c.writeFrame(ctx, env, payload); err != nil {
+		return nil, err
+	}
+
+	timer := time.NewTimer(time.Duration(ttlMs) * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case res := <-w.ch:
+		if res.Env.Type == protocol.ERROR {
+			ep, _ := protocol.UnmarshalError(res.Payload)
+			code := ep.Code
+			if code == "" {
+				code = "ERROR"
+			}
+			return nil, &RPCError{Code: code, Message: ep.Message}
+		}
+		return &res, nil
+	case <-timer.C:
+		return nil, &RPCError{Code: protocol.ErrTimeout, Message: "request timed out"}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.closeCh:
+		return nil, errors.New("meshclient: closed")
+	}
+}
+
+func (c *Client) clearPending(corr string) {
+	c.mu.Lock()
+	delete(c.pending, corr)
+	c.mu.Unlock()
+}
+
+// deliverPending hands a RESPONSE (or correlated ERROR) to a waiter. Returns
+// true if a waiter consumed it (so OnMessage is not also invoked).
+func (c *Client) deliverPending(env protocol.Envelope, payload []byte) bool {
+	if env.Corr == "" {
+		return false
+	}
+	c.mu.Lock()
+	w, ok := c.pending[env.Corr]
+	if ok {
+		delete(c.pending, env.Corr)
+	}
+	c.mu.Unlock()
+	if !ok {
+		return false
+	}
+	cp := append([]byte(nil), payload...)
+	select {
+	case w.ch <- Response{From: env.Src, Payload: cp, Corr: env.Corr, Env: env}:
+	default:
+	}
+	return true
 }
 
 // WriteFrame encodes and writes an arbitrary envelope+payload on the data plane.
@@ -239,6 +373,18 @@ func (c *Client) readLoop() {
 		env, payload, err := protocol.DecodeFrame(data)
 		if err != nil {
 			continue
+		}
+		// Route RESPONSE (and ERROR with corr) to pending Request waiters first.
+		switch env.Type {
+		case protocol.RESPONSE:
+			if c.deliverPending(env, payload) {
+				continue
+			}
+		case protocol.ERROR:
+			// Correlated application errors (e.g. NO_ROUTE for a REQUEST) wake the waiter.
+			if env.Corr != "" && c.deliverPending(env, payload) {
+				continue
+			}
 		}
 		// Copy payload: DecodeFrame aliases the transport buffer.
 		cp := append([]byte(nil), payload...)

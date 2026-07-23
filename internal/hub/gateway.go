@@ -264,16 +264,17 @@ func (g *Gateway) route(ctx context.Context, conn *Conn, data []byte) {
 }
 
 // relayRequest routes a REQUEST to its destination within the sender's tenant.
-// Offline targets get ERROR{NO_ROUTE}. Used both by WS agents and by the HTTP
-// /v1/rpc path (which injects frames via a synthetic Source).
+// Offline targets get ERROR{NO_ROUTE} with the request's corr so the initiator's
+// Request waiter can complete. Used both by WS agents and by the HTTP /v1/rpc
+// path (which injects frames via a synthetic source).
 func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envelope, payload []byte) {
 	if env.Dst == "" {
-		g.replyError(conn, protocol.ErrNoRoute, "empty destination")
+		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "empty destination")
 		return
 	}
 	dst, ok := g.registry.Lookup(conn.Tenant(), env.Dst)
 	if !ok {
-		g.replyError(conn, protocol.ErrNoRoute, "target offline or absent")
+		g.replyErrorCorr(conn, env.Corr, protocol.ErrNoRoute, "target offline or absent")
 		return
 	}
 	frame, err := protocol.EncodeFrame(env, payload)
@@ -285,7 +286,7 @@ func (g *Gateway) relayRequest(_ context.Context, conn *Conn, env protocol.Envel
 		if !errors.Is(err, ErrQueueFull) {
 			code = protocol.ErrNoRoute
 		}
-		g.replyError(conn, code, err.Error())
+		g.replyErrorCorr(conn, env.Corr, code, err.Error())
 	}
 }
 
@@ -342,6 +343,12 @@ func (g *Gateway) relaySend(ctx context.Context, conn *Conn, env protocol.Envelo
 
 // replyError enqueues an ERROR frame on the source connection's send queue.
 func (g *Gateway) replyError(conn *Conn, code, msg string) {
+	g.replyErrorCorr(conn, "", code, msg)
+}
+
+// replyErrorCorr is like replyError but attaches corr so SDK Request waiters
+// can complete on NO_ROUTE / QUEUE_FULL for a specific REQUEST.
+func (g *Gateway) replyErrorCorr(conn *Conn, corr, code, msg string) {
 	ep, err := protocol.MarshalError(protocol.ErrorPayload{Code: code, Message: msg})
 	if err != nil {
 		return
@@ -349,6 +356,7 @@ func (g *Gateway) replyError(conn *Conn, code, msg string) {
 	frame, err := protocol.EncodeFrame(protocol.Envelope{
 		V:      protocol.ProtocolVersion,
 		Type:   protocol.ERROR,
+		Corr:   corr,
 		Dst:    conn.AgentID(),
 		Tenant: conn.Tenant(),
 	}, ep)

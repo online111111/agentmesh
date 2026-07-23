@@ -135,3 +135,105 @@ func TestSendOnMessage(t *testing.T) {
 		t.Fatal("timeout waiting for OnMessage")
 	}
 }
+
+func TestRequestResponse(t *testing.T) {
+	// A Request → B echoes RESPONSE with same corr + payload.
+	base := startTestHub(t, "a:ka:alice:default\nb:kb:bob:default")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	a, err := Dial(ctx, Options{HubURL: base, Token: "ka", AgentID: "alice-a"})
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer a.Close()
+	b, err := Dial(ctx, Options{HubURL: base, Token: "kb", AgentID: "bob-b"})
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer b.Close()
+
+	// B: echo REQUEST → RESPONSE
+	b.OnMessage(func(env protocol.Envelope, payload []byte) {
+		if env.Type != protocol.REQUEST {
+			return
+		}
+		resp := protocol.Envelope{
+			V:    protocol.ProtocolVersion,
+			Type: protocol.RESPONSE,
+			ID:   protocol.NewID(),
+			Corr: env.Corr,
+			Src:  "bob-b",
+			Dst:  env.Src,
+		}
+		_ = b.WriteFrame(context.Background(), resp, payload)
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	out, err := a.Request(ctx, "bob-b", []byte("ping-req"), 3000)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if out.From != "bob-b" {
+		t.Fatalf("from: %q", out.From)
+	}
+	if string(out.Payload) != "ping-req" {
+		t.Fatalf("payload: %q", out.Payload)
+	}
+	if out.Corr == "" {
+		t.Fatal("corr empty")
+	}
+}
+
+func TestRequestTimeout(t *testing.T) {
+	// Target never replies → TIMEOUT within ttl.
+	base := startTestHub(t, "a:ka:alice:default\nb:kb:bob:default")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	a, err := Dial(ctx, Options{HubURL: base, Token: "ka", AgentID: "alice-a"})
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer a.Close()
+	b, err := Dial(ctx, Options{HubURL: base, Token: "kb", AgentID: "bob-silent"})
+	if err != nil {
+		t.Fatalf("dial B: %v", err)
+	}
+	defer b.Close()
+	// B registers but never answers.
+	time.Sleep(20 * time.Millisecond)
+
+	start := time.Now()
+	_, err = a.Request(ctx, "bob-silent", []byte("x"), 150)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected TIMEOUT")
+	}
+	if !IsTimeout(err) {
+		t.Fatalf("want TIMEOUT error, got %v", err)
+	}
+	if elapsed < 100*time.Millisecond || elapsed > 2*time.Second {
+		t.Fatalf("timeout window unexpected: %v", elapsed)
+	}
+}
+
+func TestRequestNoRoute(t *testing.T) {
+	base := startTestHub(t, "a:ka:alice:default")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	a, err := Dial(ctx, Options{HubURL: base, Token: "ka", AgentID: "alice-a"})
+	if err != nil {
+		t.Fatalf("dial A: %v", err)
+	}
+	defer a.Close()
+
+	_, err = a.Request(ctx, "alice-missing", []byte("x"), 1000)
+	if err == nil {
+		t.Fatal("expected NO_ROUTE")
+	}
+	if !IsRPCCode(err, protocol.ErrNoRoute) {
+		t.Fatalf("want NO_ROUTE, got %v", err)
+	}
+}
