@@ -22,6 +22,15 @@ var MaxFrameBytes = 16 << 20 // 16 MiB
 // MaxFrameBytes. Its Error() is the stable ErrFrameTooBig code string.
 var ErrFrameTooBigErr = errors.New(ErrFrameTooBig)
 
+// Decode errors for malformed frames. These are defensive and must never panic.
+var (
+	ErrShortFrame  = errors.New("protocol: short frame")
+	ErrBadVarint   = errors.New("protocol: invalid env_len varint")
+	ErrEnvOverrun  = errors.New("protocol: env_len overruns frame")
+	ErrBadEnvelope = errors.New("protocol: malformed envelope")
+	ErrBadArrayLen = errors.New("protocol: envelope array must have 11 slots")
+)
+
 // EncodeFrame produces a split frame:
 //
 //	type(1 byte) + env_len(uvarint) + envelope(msgpack fixed-11 array) + payload
@@ -96,7 +105,7 @@ func encodeEnvelope(env Envelope) ([]byte, error) {
 
 // encodeHdr encodes the optional header map with keys sorted ascending so the
 // byte output is deterministic across languages. A nil/empty map encodes as an
-// empty map (map16/fixmap len 0), never as nil, to keep the slot present.
+// empty map (fixmap len 0), never as nil, to keep the slot present.
 func encodeHdr(enc *msgpack.Encoder, hdr map[string]string) error {
 	if err := enc.EncodeMapLen(len(hdr)); err != nil {
 		return err
@@ -118,4 +127,132 @@ func encodeHdr(enc *msgpack.Encoder, hdr map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// DecodeFrame parses a split frame. It returns the decoded Envelope and the
+// payload as a slice pointing INTO the original buf (zero-copy tail): the
+// returned payload shares buf's backing array and is never copied. The
+// envelope segment is decoded (it may be copied by the msgpack library, which
+// is acceptable); only the payload tail must not be copied.
+//
+// The env_len bound is checked before any allocation to prevent memory
+// amplification (DESIGN §4.1). Malformed frames return an error and never panic.
+func DecodeFrame(buf []byte) (Envelope, []byte, error) {
+	if len(buf) < 1 {
+		return Envelope{}, nil, ErrShortFrame
+	}
+	typ := MsgType(buf[0])
+
+	envLen, n := binary.Uvarint(buf[1:])
+	if n <= 0 {
+		return Envelope{}, nil, ErrBadVarint
+	}
+	off := 1 + n
+
+	// Bound check BEFORE trusting/allocating on the declared length.
+	if envLen > uint64(MaxFrameBytes) {
+		return Envelope{}, nil, ErrFrameTooBigErr
+	}
+	if uint64(len(buf)-off) < envLen {
+		return Envelope{}, nil, ErrEnvOverrun
+	}
+
+	envBytes := buf[off : off+int(envLen)]
+	env, err := decodeEnvelope(envBytes)
+	if err != nil {
+		return Envelope{}, nil, err
+	}
+	// The type byte is authoritative for routing; keep envelope Type in sync.
+	env.Type = typ
+
+	// Zero-copy payload tail: slice of the original buffer.
+	payload := buf[off+int(envLen):]
+	return env, payload, nil
+}
+
+// decodeEnvelope parses the fixed-order 11-slot positional msgpack array.
+func decodeEnvelope(envBytes []byte) (Envelope, error) {
+	dec := msgpack.NewDecoder(bytes.NewReader(envBytes))
+	arrLen, err := dec.DecodeArrayLen()
+	if err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	if arrLen != envelopeSlots {
+		return Envelope{}, ErrBadArrayLen
+	}
+
+	var env Envelope
+	v, err := dec.DecodeUint()
+	if err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	env.V = uint8(v)
+
+	typ, err := dec.DecodeUint()
+	if err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	env.Type = MsgType(typ)
+
+	if env.ID, err = dec.DecodeString(); err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	if env.Corr, err = dec.DecodeString(); err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	if env.Stream, err = dec.DecodeString(); err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	if env.Src, err = dec.DecodeString(); err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	if env.Dst, err = dec.DecodeString(); err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	if env.Tenant, err = dec.DecodeString(); err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+
+	ttl, err := dec.DecodeInt64()
+	if err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	env.TTL = int32(ttl)
+
+	hops, err := dec.DecodeUint()
+	if err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	env.Hops = uint8(hops)
+
+	env.Hdr, err = decodeHdr(dec)
+	if err != nil {
+		return Envelope{}, ErrBadEnvelope
+	}
+	return env, nil
+}
+
+// decodeHdr parses the hdr map slot. An empty map decodes to a nil map so the
+// round-trip of a nil/empty hdr is stable (len == 0 either way).
+func decodeHdr(dec *msgpack.Decoder) (map[string]string, error) {
+	mapLen, err := dec.DecodeMapLen()
+	if err != nil {
+		return nil, err
+	}
+	if mapLen <= 0 {
+		return nil, nil
+	}
+	hdr := make(map[string]string, mapLen)
+	for i := 0; i < mapLen; i++ {
+		k, err := dec.DecodeString()
+		if err != nil {
+			return nil, err
+		}
+		val, err := dec.DecodeString()
+		if err != nil {
+			return nil, err
+		}
+		hdr[k] = val
+	}
+	return hdr, nil
 }
