@@ -1,0 +1,48 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+      - name: build
+        run: go build ./...
+      - name: test
+        run: go test ./... -race -count=1
+      - name: vet
+        run: go vet ./...
+      - name: fmt
+        run: test -z "$(gofmt -l .)"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62.2
+      - name: smoke
+        run: bash scripts/smoke.sh
+      - name: cross-compile
+        run: bash scripts/build-all.sh
+  python-vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r sdk/python/requirements.txt
+      - run: python -m pytest sdk/python/tests/test_vectors.py -q
+  ts-vectors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - working-directory: sdk/typescript
+        run: npm install && npx vitest run test/vectors.test.ts
