@@ -142,8 +142,11 @@ func buildEchoHandler(agentID string, c *meshclient.Client) msgHandler {
 // OpenAI-compatible chat-completions endpoint and replies with the generated
 // text. The inbound payload may be raw text or a JSON object; see extractPrompt.
 func buildLLMHandler(cfg Config, c *meshclient.Client) (msgHandler, error) {
-	if cfg.LLM.BaseURL == "" || cfg.LLM.APIKey == "" || cfg.LLM.Model == "" {
-		return nil, errors.New("agentrt: llm mode requires LLM.BaseURL, LLM.APIKey, and LLM.Model")
+	if cfg.LLM.BaseURL == "" || cfg.LLM.APIKey == "" {
+		return nil, errors.New("agentrt: llm mode requires LLM.BaseURL and LLM.APIKey")
+	}
+	if cfg.LLM.Model == "" {
+		cfg.LLM.Model = "gpt-4o"
 	}
 	timeout := cfg.LLM.TimeoutMs
 	if timeout <= 0 {
