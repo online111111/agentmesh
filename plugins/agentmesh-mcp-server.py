@@ -7,7 +7,7 @@ Exposes three tools that Hermes (or any MCP client) can call directly:
   - mesh_send:     fire-and-forget SEND to an agent (uses /v1/send API)
 
 Configuration via environment variables:
-  MESH_HUB          Hub URL (default: https://hub.example.com)
+  MESH_HUB          Hub URL (default: https://mesh.daski.online)
   MESH_TOKEN        API key token (required)
   MESH_AGENT_ID     This agent's ID (default: hermes)
   MESH_BIN          Path to mesh binary (default: /usr/local/bin/mesh)
@@ -24,7 +24,7 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 MESH_BIN = os.environ.get("MESH_BIN", "/usr/local/bin/mesh")
-MESH_HUB = os.environ.get("MESH_HUB", "https://hub.example.com")
+MESH_HUB = os.environ.get("MESH_HUB", "https://mesh.daski.online")
 MESH_TOKEN = os.environ.get("MESH_TOKEN", "")
 MESH_AGENT_ID = os.environ.get("MESH_AGENT_ID", "hermes")
 
