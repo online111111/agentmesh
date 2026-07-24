@@ -88,6 +88,10 @@ func parseAgentFlags(args []string) (agentrt.Config, error) {
 			Model:        os.Getenv("MESH_LLM_MODEL"),
 			SystemPrompt: os.Getenv("MESH_LLM_SYSTEM"),
 		},
+		Exec: agentrt.ExecConfig{
+			Command:    os.Getenv("MESH_EXEC_COMMAND"),
+			TimeoutSec: 0, // parsed from flag below
+		},
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -155,8 +159,24 @@ func parseAgentFlags(args []string) (agentrt.Config, error) {
 				return cfg, err
 			}
 			cfg.LLM.SystemPrompt = v
+		case "--exec-command":
+			v, err := next()
+			if err != nil {
+				return cfg, err
+			}
+			cfg.Exec.Command = v
+		case "--exec-timeout":
+			v, err := next()
+			if err != nil {
+				return cfg, err
+			}
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				return cfg, fmt.Errorf("invalid --exec-timeout: %s", v)
+			}
+			cfg.Exec.TimeoutSec = n
 		case "-h", "--help":
-			return cfg, fmt.Errorf("usage: mesh agent --hub URL --token KEY --agent-id ID [--caps CAP,...] [--mode echo|llm] [--llm-base-url URL --llm-api-key KEY --llm-model ID [--llm-system TEXT]]")
+			return cfg, fmt.Errorf("usage: mesh agent --hub URL --token KEY --agent-id ID [--caps CAP,...] [--mode echo|llm|exec] [--llm-base-url URL --llm-api-key KEY --llm-model ID [--llm-system TEXT]] [--exec-command 'cmd {prompt}' [--exec-timeout SEC]]")
 		default:
 			return cfg, fmt.Errorf("unknown flag %q", a)
 		}

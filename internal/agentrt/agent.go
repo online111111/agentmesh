@@ -1,9 +1,13 @@
 // Package agentrt implements the edge agent runtime: connect to a Hub, register
-// with HELLO/WELCOME, and handle inbound REQUEST frames. Two modes:
+// with HELLO/WELCOME, and handle inbound REQUEST frames. Three modes:
 //
 //   - echo:  reply with the same payload (default, for connectivity tests)
 //   - llm:   forward the payload as a user message to an OpenAI-compatible
 //            chat-completions API and return the generated reply
+//   - exec:  run an external command with the payload as input and return
+//            its stdout as the reply. {prompt} in the command template is
+//            replaced by the extracted prompt text. This enables integration
+//            with any agent framework (Hermes, custom scripts, etc.)
 package agentrt
 
 import (
@@ -14,6 +18,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,11 +34,28 @@ type Config struct {
 	AgentID string
 	Caps    []string
 
-	// Mode is "echo" (default) or "llm".
+	// Mode is "echo" (default), "llm", or "exec".
 	Mode string
 
 	// LLM configures the upstream LLM API when Mode == "llm".
 	LLM LLMConfig
+
+	// Exec configures the external command when Mode == "exec".
+	Exec ExecConfig
+}
+
+// ExecConfig configures an external command to handle inbound REQUEST frames.
+// The command template in Command contains {prompt} as a placeholder that
+// gets replaced by the extracted prompt text.
+type ExecConfig struct {
+	// Command is the full command template, e.g.
+	//   "hermes chat -q {prompt} --max-turns 3"
+	// or
+	//   "python my_agent.py {prompt}"
+	// The {prompt} placeholder is replaced with the message content.
+	Command string
+	// TimeoutSec bounds one command execution. Zero → 120.
+	TimeoutSec int
 }
 
 // LLMConfig configures an OpenAI-compatible chat-completions endpoint used to
@@ -89,6 +112,13 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		handler = h
 	}
+	if cfg.Mode == "exec" {
+		h, err := buildExecHandler(cfg, c)
+		if err != nil {
+			return err
+		}
+		handler = h
+	}
 
 	var writeMu sync.Mutex
 	c.OnMessage(func(env protocol.Envelope, payload []byte) {
@@ -136,6 +166,84 @@ func buildEchoHandler(agentID string, c *meshclient.Client) msgHandler {
 	return func(env protocol.Envelope, payload []byte, writeMu *sync.Mutex, ctx context.Context) {
 		respond(ctx, c, agentID, env, payload, writeMu)
 	}
+}
+
+// buildExecHandler returns a handler that runs an external command with the
+// prompt as input and returns the command's stdout as the reply.
+// The command template's {prompt} placeholder is replaced by the extracted
+// prompt text. The command runs via sh -c (or cmd /c on Windows).
+func buildExecHandler(cfg Config, c *meshclient.Client) (msgHandler, error) {
+	if cfg.Exec.Command == "" {
+		return nil, errors.New("agentrt: exec mode requires Exec.Command")
+	}
+	timeout := cfg.Exec.TimeoutSec
+	if timeout <= 0 {
+		timeout = 120
+	}
+
+	return func(env protocol.Envelope, payload []byte, writeMu *sync.Mutex, ctx context.Context) {
+		prompt := extractPrompt(payload)
+		reply, err := callExec(ctx, cfg.Exec, prompt, timeout)
+		if err != nil {
+			eb, _ := json.Marshal(map[string]string{
+				"error": err.Error(),
+				"agent": cfg.AgentID,
+			})
+			respond(ctx, c, cfg.AgentID, env, eb, writeMu)
+			return
+		}
+		ob, _ := json.Marshal(map[string]string{
+			"reply": reply,
+			"agent": cfg.AgentID,
+			"mode":  "exec",
+		})
+		respond(ctx, c, cfg.AgentID, env, ob, writeMu)
+	}, nil
+}
+
+// callExec runs the command template, replacing {prompt} with the prompt text.
+// Returns the trimmed stdout as the reply string.
+func callExec(ctx context.Context, cfg ExecConfig, prompt string, timeoutSec int) (string, error) {
+	if prompt == "" {
+		return "", errors.New("empty prompt")
+	}
+	// Replace {prompt} in the command template.
+	// Use single-quotes to shell-escape the prompt safely.
+	escaped := strings.ReplaceAll(prompt, "'", "'\"'\"'")
+	cmdStr := strings.ReplaceAll(cfg.Command, "{prompt}", "'"+escaped+"'")
+
+	// Apply timeout via context.
+	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	cmd = exec.CommandContext(execCtx, "sh", "-c", cmdStr)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if execCtx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("exec timed out after %ds", timeoutSec)
+	}
+	if err != nil {
+		stderrStr := stderr.String()
+		if len(stderrStr) > 300 {
+			stderrStr = stderrStr[:300] + "…"
+		}
+		return "", fmt.Errorf("exec failed: %w%s", err, func() string {
+			if stderrStr != "" {
+				return ", stderr: " + stderrStr
+			}
+			return ""
+		}())
+	}
+	out := strings.TrimSpace(stdout.String())
+	if out == "" {
+		return "", errors.New("exec produced no output")
+	}
+	return out, nil
 }
 
 // buildLLMHandler returns a handler that forwards the request payload to an
