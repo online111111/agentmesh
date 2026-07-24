@@ -81,6 +81,13 @@ func parseAgentFlags(args []string) (agentrt.Config, error) {
 		HubURL:  os.Getenv("MESH_HUB"),
 		Token:   os.Getenv("MESH_TOKEN"),
 		AgentID: os.Getenv("MESH_AGENT_ID"),
+		Mode:    os.Getenv("MESH_MODE"),
+		LLM: agentrt.LLMConfig{
+			BaseURL:      os.Getenv("MESH_LLM_BASE_URL"),
+			APIKey:       os.Getenv("MESH_LLM_API_KEY"),
+			Model:        os.Getenv("MESH_LLM_MODEL"),
+			SystemPrompt: os.Getenv("MESH_LLM_SYSTEM"),
+		},
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -118,8 +125,38 @@ func parseAgentFlags(args []string) (agentrt.Config, error) {
 			if v != "" {
 				cfg.Caps = strings.Split(v, ",")
 			}
+		case "--mode":
+			v, err := next()
+			if err != nil {
+				return cfg, err
+			}
+			cfg.Mode = v
+		case "--llm-base-url":
+			v, err := next()
+			if err != nil {
+				return cfg, err
+			}
+			cfg.LLM.BaseURL = v
+		case "--llm-api-key":
+			v, err := next()
+			if err != nil {
+				return cfg, err
+			}
+			cfg.LLM.APIKey = v
+		case "--llm-model":
+			v, err := next()
+			if err != nil {
+				return cfg, err
+			}
+			cfg.LLM.Model = v
+		case "--llm-system":
+			v, err := next()
+			if err != nil {
+				return cfg, err
+			}
+			cfg.LLM.SystemPrompt = v
 		case "-h", "--help":
-			return cfg, fmt.Errorf("usage: mesh agent --hub URL --token KEY --agent-id ID [--caps CAP,...]")
+			return cfg, fmt.Errorf("usage: mesh agent --hub URL --token KEY --agent-id ID [--caps CAP,...] [--mode echo|llm] [--llm-base-url URL --llm-api-key KEY --llm-model ID [--llm-system TEXT]]")
 		default:
 			return cfg, fmt.Errorf("unknown flag %q", a)
 		}
