@@ -1,73 +1,223 @@
-# AgentMesh
+# AgentMesh — Cross-Platform Agent Communication
 
-Cross-platform multi-agent communication mesh: a high-performance Go Hub
-(`meshd`) plus CLI/runtime (`mesh`) and Go / Python / TypeScript SDKs.
+Connect any AI agent on any device to a shared mesh. Agents discover each other, send messages, and get responses — no matter what framework they run on.
 
-Agents register over WebSocket, exchange SEND/REQUEST messages, stream token
-results, cancel in-flight work, and publish to tenant-isolated topics. The Hub
-relays with zero-copy payload handling and connection identity as the only
-trust root.
+## Architecture
 
-## Install & three-command demo
-
-```bash
-go install github.com/online111111/agentmesh/cmd/meshd@latest   # or build from source
-go install github.com/online111111/agentmesh/cmd/mesh@latest
-
-# 1) Hub (loopback)
-export MESH_HOST=127.0.0.1 MESH_PORT=8080
-export MESH_API_KEYS='a:ka:alice:default'
-meshd serve
-
-# 2) Echo agent
-mesh agent --hub http://127.0.0.1:8080 --token ka --agent-id alice-echo --caps echo
-
-# 3) Call
-mesh call --hub http://127.0.0.1:8080 --token ka --to alice-echo --payload '{"hello":"mesh"}'
+```
+Agent A (Hermes)  ←→  Hub (hub.example.com)  ←→  Agent B (Claude Desktop / Pi / custom)
+Agent C (Cursor)   ↗                          ↖  Agent D (any MCP client)
 ```
 
-Automated cross-process smoke:
+- **Hub** relays messages between agents (WebSocket + HTTP)
+- **mesh CLI** connects agents and lets them call each other
+- **MCP Server** plugs into any MCP-compatible agent framework
+
+## Quick Start
+
+### 1. Download mesh CLI
+
+| Platform | Download |
+|----------|----------|
+| Linux amd64 | `mesh-linux-amd64` |
+| Linux arm64 | `mesh-linux-arm64` |
+| macOS amd64 | `mesh-darwin-amd64` |
+| macOS arm64 (Apple Silicon) | `mesh-darwin-arm64` |
+| Windows amd64 | `mesh-windows-amd64.exe` |
+| Windows arm64 | `mesh-windows-arm64.exe` |
+
+All available at: https://github.com/online111111/agentmesh/releases/tag/v0.1.0
+
+### 2. Start an agent (online and ready to receive)
 
 ```bash
-./scripts/smoke.sh
+# Rename to `mesh` for convenience
+mv mesh-linux-amd64 mesh && chmod +x mesh
+
+# Register as an online agent (stays connected, receives messages)
+./mesh agent --hub https://hub.example.com --token YOUR_TOKEN --agent-id your-name --caps echo
 ```
 
-## Build from source
+### 3. Call another agent
 
 ```bash
-git clone https://github.com/online111111/agentmesh
+./mesh call --hub https://hub.example.com --token YOUR_TOKEN --to other-agent --payload "hello!"
+```
+
+### 4. Self-host a Hub (optional)
+
+```bash
+./meshd serve --addr :8080 --api-keys KEY1,KEY2
+```
+
+## MCP Plugin — Connect Any MCP-Compatible Agent
+
+The MCP Server (`agentmesh-mcp-server.py`) exposes three tools:
+- `mesh_agents` — list online agents
+- `mesh_call` — send a question to an agent, get its reply
+- `mesh_send` — fire-and-forget notification
+
+### Hermes Agent
+
+```yaml
+# ~/.hermes/config.yaml
+mcp_servers:
+  agentmesh:
+    enabled: true
+    command: python3
+    args:
+      - /path/to/agentmesh-mcp-server.py
+    env:
+      MESH_HUB: https://hub.example.com
+      MESH_TOKEN: YOUR_TOKEN
+      MESH_AGENT_ID: your-hermes
+```
+
+### Claude Desktop
+
+```json
+// claude_desktop_config.json
+{
+  "mcpServers": {
+    "agentmesh": {
+      "command": "python3",
+      "args": ["/path/to/agentmesh-mcp-server.py"],
+      "env": {
+        "MESH_HUB": "https://hub.example.com",
+        "MESH_TOKEN": "YOUR_TOKEN",
+        "MESH_AGENT_ID": "claude-desktop"
+      }
+    }
+  }
+}
+```
+
+### Cursor / VS Code (Continue.dev)
+
+```json
+{
+  "mcpServers": {
+    "agentmesh": {
+      "command": "python3",
+      "args": ["/path/to/agentmesh-mcp-server.py"],
+      "env": {
+        "MESH_HUB": "https://hub.example.com",
+        "MESH_TOKEN": "YOUR_TOKEN",
+        "MESH_AGENT_ID": "cursor"
+      }
+    }
+  }
+}
+```
+
+### Pi (Coding Agent)
+
+```json
+// ~/.pi/agent/models.json — add to providers
+{
+  "agentmesh": {
+    "baseUrl": "https://hub.example.com/v1",
+    "api": "openai-completions",
+    "apiKey": "YOUR_TOKEN",
+    "models": [{ "id": "mesh-agent", "name": "Mesh Agent" }]
+  }
+}
+```
+
+### Any Custom Agent (Python)
+
+```python
+import subprocess, json
+
+def mesh_call(target_agent, message):
+    r = subprocess.run([
+        "mesh", "call",
+        "--hub", "https://hub.example.com",
+        "--token", "YOUR_TOKEN",
+        "--to", target_agent,
+        "--payload", message,
+        "--ttl-ms", "60000"
+    ], capture_output=True, text=True, timeout=70)
+    return json.loads(r.stdout)
+
+# Call any agent on the mesh
+reply = mesh_call("alice-hermes", "What is 1+1?")
+print(reply["payload"]["reply"])  # "2"
+```
+
+### Any Custom Agent (Go)
+
+```go
+import "github.com/online111111/agentmesh/pkg/meshclient"
+
+c, _ := meshclient.Dial(ctx, meshclient.Options{
+    HubURL:  "https://hub.example.com",
+    Token:   "YOUR_TOKEN",
+    AgentID: "my-go-agent",
+    Caps:    []string{"echo"},
+})
+defer c.Close()
+
+resp, _ := c.Request(ctx, "alice-hermes", []byte("hello!"), 30000)
+fmt.Println(string(resp.Payload))
+```
+
+## LLM Mode
+
+Agents can answer messages using an LLM instead of echo:
+
+```bash
+mesh agent \
+  --hub https://hub.example.com \
+  --token YOUR_TOKEN \
+  --agent-id alice-hermes \
+  --mode llm \
+  --llm-base-url http://127.0.0.1:8317/v1 \
+  --llm-api-key YOUR_LLM_KEY \
+  --llm-model gpt-5.6-sol \
+  --llm-system "You are a helpful assistant on AgentMesh"
+```
+
+## How It Works
+
+1. **Hub** runs at `hub.example.com` (or self-host with `meshd`)
+2. Agents connect via WebSocket (`mesh agent`) and stay online
+3. `mesh call` sends a REQUEST → target agent processes → RESPONSE comes back
+4. MCP Server wraps `mesh call` as a tool any MCP agent can use
+
+```
+mesh call → Hub → target agent (LLM/echo/custom) → reply → back to caller
+```
+
+## Self-Hosting Your Own Hub
+
+```bash
+# Download meshd for your platform
+./meshd serve --addr :8080 --api-keys "secret-key-1,secret-key-2"
+
+# Agents connect to your Hub
+mesh agent --hub http://your-server:8080 --token secret-key-1 --agent-id alice
+```
+
+## API Reference
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Hub health check |
+| `/v1/agents` | GET | List online agents (auth: Bearer token) |
+| `/v1/rpc` | POST | Send REQUEST (sync) |
+| `/v1/send` | POST | Send SEND (async) |
+| WS `/` | — | WebSocket for long-lived agents (HELLO/WELCOME) |
+
+## Building From Source
+
+```bash
+git clone https://github.com/online111111/agentmesh.git
 cd agentmesh
-go build -o bin/meshd ./cmd/meshd
-go build -o bin/mesh ./cmd/mesh
-./scripts/build-all.sh   # cross-compile matrix → dist/
+go build -o mesh ./cmd/mesh
+go build -o meshd ./cmd/meshd
 ```
-
-## SDKs
-
-| Language | Path | Notes |
-|----------|------|-------|
-| Go | `pkg/meshclient` | Dial, Send, Request, RequestStream, Cancel, DelegateTask |
-| Python | `sdk/python` | async websockets client + golden vector tests |
-| TypeScript | `sdk/typescript` | ws client + vitest golden vectors |
-
-Wire parity is enforced by `internal/protocol/testvectors.json`.
-
-## Docs
-
-- Design (frozen wire): [`docs/design/mesh-design.md`](docs/design/mesh-design.md)
-- Protocol summary: [`docs/guides/protocol.md`](docs/guides/protocol.md)
-- LAN quickstart: [`docs/guides/quickstart-lan.md`](docs/guides/quickstart-lan.md)
-- Public deploy: [`docs/guides/quickstart-public.md`](docs/guides/quickstart-public.md)
-- Bench baseline: [`bench/RESULTS.md`](bench/RESULTS.md)
-
-## Security highlights
-
-- Hub **overwrites** `src`/`tenant` from authenticated connection identity.
-- agentId bound to principal namespace; takeover only same principal.
-- Non-loopback bind without TLS requires `MESH_INSECURE=true` or is refused
-  (`INSECURE_REFUSED`).
-- Per-agent message rate limit + per-IP connect anti-flood.
 
 ## License
 
-See repository for license terms.
+MIT
